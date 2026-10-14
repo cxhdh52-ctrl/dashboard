@@ -1056,7 +1056,15 @@ async function confirmDeleteCampaign() {
       state.expandedSources.delete(s.source);
       state.selectedCampaigns.delete(String(s.campaignId));
     } catch (err) {
-      failed.push(`${s.source}: ${err.message}`);
+      failed.push({ source: s.source, message: err.message });
+      // Expired connection: the rest would fail identically — stop and count
+      // them as failed for the same reason instead of hammering TikTok.
+      if (err.code === "reconnect_required") {
+        for (const rest of targets.slice(targets.indexOf(s) + 1)) {
+          failed.push({ source: rest.source, message: err.message });
+        }
+        break;
+      }
     }
   }
   renderDetailBcSelector();
@@ -1065,7 +1073,11 @@ async function confirmDeleteCampaign() {
   if (failed.length) {
     btn.disabled = false;
     btn.textContent = targets.length > 1 ? `Delete ${targets.length} Campaigns` : "Delete Campaign";
-    errEl.textContent = `${failed.length} failed — ${failed.join("; ")}`;
+    // One line per distinct reason: "ad27, ad28: <reason>" instead of repeating it.
+    const byMessage = new Map();
+    for (const f of failed) byMessage.set(f.message, [...(byMessage.get(f.message) || []), f.source]);
+    const lines = [...byMessage].map(([msg, sources]) => `${sources.join(", ")}: ${msg}`);
+    errEl.textContent = `${failed.length} failed — ${lines.join("; ")}`;
     return;
   }
 

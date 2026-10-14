@@ -245,6 +245,17 @@ async function resolveTrackedCampaign(supabase, campaignId) {
   return { campaign, advertiser: adv, connection: conn };
 }
 
+// True when a TikTok call failed because the connection's OAuth tokens are
+// dead (refresh token expired/revoked), not because TikTok refused the write.
+// Only a reconnect fixes this, so callers must not treat it as a rejection.
+function isAuthExpired(err) {
+  if (!err) return false;
+  if (err.name === "UnauthorizedError") return true;
+  return /refresh token (has )?(expired|invalid|revoked)|invalid_grant|unauthori[sz]ed|re-?authori[sz]/i.test(
+    String(err.message || "")
+  );
+}
+
 // Connects one MCP client for a connection, runs fn(client), always closes.
 async function withClient(supabase, connection, fn) {
   const { serverUrl, redirectUrl } = resolveConfig();
@@ -356,6 +367,22 @@ exports.handler = async function (event) {
           deleteCampaign({ client, advertiserId: r.campaign.advertiser_id, campaignId })
         );
       } catch (err) {
+        // Dead OAuth tokens: every TikTok call on this connection will fail the
+        // same way (including the campaign_get check below), and the campaign
+        // is still live on TikTok — so don't hide or delete anything locally.
+        // Flag the connection so the Connections list shows it needs a reconnect.
+        if (isAuthExpired(err)) {
+          await supabase
+            .from("tiktok_connections")
+            .update({ status: "error", updated_at: new Date().toISOString() })
+            .eq("id", r.connection.id);
+          return json(401, {
+            error: "TikTok connection expired — reconnect it, then retry.",
+            code: "reconnect_required",
+            connection_id: r.connection.id,
+          });
+        }
+
         // The delete write failed — but that can also mean the campaign is
         // ALREADY gone from TikTok (deleted directly in Ads Manager, outside
         // Kryzxr Ads, so campaign_status_update has nothing left to act on).

@@ -111,6 +111,7 @@ async function readTiktokResponse(res, fallback) {
     const err = new Error(data.details ? `${msg} — ${data.details}` : msg);
     err.status = res.status;
     err.details = data.details;
+    err.code = data.code;
     throw err;
   }
   return data;
