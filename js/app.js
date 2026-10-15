@@ -52,6 +52,7 @@ import {
 } from "./api.js";
 import { initTheme } from "./theme.js";
 import { createMainChart, updateMainChart } from "./charts.js";
+import { initSparkMaker } from "./spark-maker.js";
 
 // ---------------------------------------------------------------------------
 // Fallback dataset — only ever used on a brand-new browser with no cache AND
@@ -400,6 +401,8 @@ function wireEvents() {
 
   document.getElementById("toolsTrackerBtn").addEventListener("click", openTrackerModal);
   wireTrackerEvents();
+
+  initSparkMaker({ onOpen: closeToolsDrawer });
 
   document.getElementById("detailBcSelect").addEventListener("change", (e) => {
     state.detailBcFilter = e.target.value;

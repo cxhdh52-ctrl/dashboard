@@ -7,7 +7,7 @@
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;800&family=Rajdhani:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;800&family=Rajdhani:wght@500;600;700&family=Inter:wght@400;500;600;700&family=TikTok+Sans:wght@800&display=swap" rel="stylesheet">
 
 <link rel="stylesheet" href="css/themes.css" />
 <link rel="stylesheet" href="css/base.css" />
@@ -167,6 +167,13 @@
       <span>Campaign Creator</span>
     </button>
 
+    <button class="tools-item" id="toolsSparkMakerBtn">
+      <span class="tools-item-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 7 4 4 20 4 20 7"></polyline><line x1="9" y1="20" x2="15" y2="20"></line><line x1="12" y1="4" x2="12" y2="20"></line></svg>
+      </span>
+      <span>Spark Maker</span>
+    </button>
+
     <button class="tools-item" id="toolsTrackerBtn">
       <span class="tools-item-icon">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"></path></svg>
@@ -285,6 +292,92 @@
     <div class="modal-error" id="trackerError"></div>
     <div id="trackerTestsWrap" class="tracker-table-wrap"></div>
     <div id="trackerWinnersWrap" class="tracker-table-wrap" hidden></div>
+  </div>
+</div>
+
+<!-- ============ SPARK MAKER MODAL ============ -->
+<div class="modal-backdrop" id="sparkMakerModal">
+  <div class="modal modal-lg sm-modal">
+    <div class="modal-header">
+      <h3>Spark Maker</h3>
+      <button id="closeSparkMakerModal">✕</button>
+    </div>
+    <p class="sm-intro">Burns each angle onto every clip or hook slide inside TikTok's safe zone. Everything runs in this browser and nothing is uploaded.</p>
+
+    <div class="tracker-toolbar">
+      <div class="tracker-tabs" id="smTabs">
+        <button type="button" class="tracker-tab active" data-sm-tab="videos" data-sm-lock>Videos</button>
+        <button type="button" class="tracker-tab" data-sm-tab="slides" data-sm-lock>Slides</button>
+      </div>
+    </div>
+
+    <div class="sm-grid">
+      <div class="sm-col">
+        <div id="smVideosPane">
+          <label class="sm-label">Raw clips</label>
+          <label class="icon-btn sm-file-btn">+ Add clips<input type="file" id="smClipInput" accept="video/*,.mov,.mp4,.m4v,.webm" multiple data-sm-lock hidden /></label>
+          <div class="sm-chips" id="smClipList"></div>
+        </div>
+        <div id="smSlidesPane" hidden>
+          <label class="sm-label">Hook slides <span class="eng-hint">— the angle goes on these; each one makes its own slideshow</span></label>
+          <label class="icon-btn sm-file-btn">+ Add hook slides<input type="file" id="smHookInput" accept="image/*" multiple data-sm-lock hidden /></label>
+          <div class="sm-chips" id="smHookList"></div>
+          <label class="sm-label">Middle slides <span class="eng-hint">— optional, same in every slideshow, no text</span></label>
+          <label class="icon-btn sm-file-btn">+ Add middle slides<input type="file" id="smMiddleInput" accept="image/*" multiple data-sm-lock hidden /></label>
+          <div class="sm-chips" id="smMiddleList"></div>
+          <label class="sm-label">Checkout slide <span class="eng-hint">— last slide</span></label>
+          <label class="icon-btn sm-file-btn">+ Add checkout image<input type="file" id="smCheckoutInput" accept="image/*" data-sm-lock hidden /></label>
+          <div class="sm-chips" id="smCheckoutList"></div>
+          <input type="text" id="smCheckoutText" placeholder="Checkout text (optional), e.g. link in bio ⬇️" autocomplete="off" />
+        </div>
+
+        <label class="sm-label" for="smAngles">Angles <span class="eng-hint">— one per line, use | to force a line break</span></label>
+        <textarea id="smAngles" rows="5" placeholder="POV: you finally found it&#10;Nobody talks about this…"></textarea>
+
+        <div class="sm-controls">
+          <label>Style
+            <select id="smStyle">
+              <option value="outline">White + outline</option>
+              <option value="white">White box</option>
+              <option value="black">Black box</option>
+            </select>
+          </label>
+          <label>Position
+            <select id="smPosition">
+              <option value="top">Top</option>
+              <option value="upper" selected>Upper third</option>
+              <option value="middle">Middle</option>
+            </select>
+          </label>
+          <label>Size <span id="smSizeVal">100%</span>
+            <input type="range" id="smSize" min="70" max="130" step="5" value="100" />
+          </label>
+        </div>
+      </div>
+
+      <div class="sm-col sm-col-preview">
+        <div class="sm-preview-head">
+          <span id="smSummary" class="sm-summary"></span>
+          <span class="eng-hint">Drag text on a preview to move it for that clip</span>
+        </div>
+        <div id="smPreview" class="sm-preview"></div>
+      </div>
+    </div>
+
+    <div id="smStatus" class="eng-placeholder"></div>
+    <div class="modal-actions">
+      <button class="icon-btn" id="smCancelBtn" hidden>Stop</button>
+      <button class="icon-btn primary" id="smGenerateBtn" disabled>Make sparks</button>
+    </div>
+
+    <div class="sm-results-bar" id="smResultsBar" hidden>
+      <span id="smResultsCount" class="sm-summary"></span>
+      <div class="sm-results-actions">
+        <button class="icon-btn" id="smShareAllBtn" hidden>Save to Photos</button>
+        <button class="icon-btn primary" id="smZipBtn">Download all (.zip)</button>
+      </div>
+    </div>
+    <div id="smResults" class="sm-results"></div>
   </div>
 </div>
 
