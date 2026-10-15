@@ -88,6 +88,12 @@ exports.handler = async function (event) {
           tools.push(...page.tools);
           cursor = page.nextCursor;
         } while (cursor);
+        // ?tools=1&tool=<name> -> that one tool's full description + input schema
+        const one = (event.queryStringParameters || {}).tool;
+        if (one) {
+          const t = tools.find((x) => x.name === one);
+          return t ? json(200, t) : json(404, { error: `No tool named ${one}` });
+        }
         return json(200, {
           count: tools.length,
           tools: tools
