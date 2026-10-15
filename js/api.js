@@ -460,6 +460,17 @@ export async function runCampaignCreator(payload) {
   return readTiktokResponse(res, "Campaign creation failed"); // { results: [...] }
 }
 
+// Recent posts from TikTok accounts linked to the selected accounts' BC(s) —
+// usable as Spark ads without a code. Read-only.
+export async function fetchLinkedPosts(connectionId, advertiserIds) {
+  const res = await fetch("/.netlify/functions/campaign-creator-run", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "linked_posts", connection_id: connectionId, advertiser_ids: advertiserIds }),
+  });
+  return readTiktokResponse(res, "Couldn't load linked accounts"); // { bcs: [...] }
+}
+
 // ---------------- Comment templates (global, reusable) ----------------
 
 export async function listCommentTemplates() {

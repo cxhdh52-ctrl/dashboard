@@ -8,6 +8,12 @@
 //        Sales has no conversion-event selection — optimization_goal CONVERT +
 //        optimization_event BUTTON (no pixel) are fixed and resolved automatically.
 //
+//   "linked_posts"  { connection_id, advertiser_ids:[...] }
+//        -> { bcs:[{ bc_id, bc_name, accounts:[{ identity_id, name, posts:[{ item_id,
+//             text, status, poster_url, is_carousel }], error? }] }] }
+//        A picked post is sent in spark_codes as "linked:<identity_id>:<item_id>"
+//        — no Spark code needed for TikTok accounts linked to the BC.
+//
 //   "validate_form"  { connection_id, advertiser_ids:[...], page_id }
 //        -> { ok, page_id, name, checks:[{advertiser_id,advertiser_name,ok,error?}] }
 //
@@ -51,6 +57,7 @@ const {
   listInstantPages,
   newestInstantPage,
   createOneCampaign,
+  listLinkedPosts,
 } = require("./_shared/campaign-creator-build");
 
 const AUTO_IDENTITY = { identity_id: "__AUTO__", identity_type: "AUTO", name: "Auto — each Spark code's own identity" };
@@ -82,6 +89,7 @@ exports.handler = async function (event) {
     if (body.action === "resources") return resources(supabase, body);
     if (body.action === "validate_form") return validateFormAction(supabase, body);
     if (body.action === "create") return createBatch(supabase, body);
+    if (body.action === "linked_posts") return linkedPosts(supabase, body);
     return json(400, { error: `Unknown action: ${body.action}` });
   } catch (err) {
     return json(500, { error: "Request failed", details: err.message });
@@ -100,6 +108,39 @@ async function loadConnAndAdvertisers(supabase, connectionId, advertiserIds) {
     .in("advertiser_id", advertiserIds.map(String));
   const byId = new Map((advRows || []).map((a) => [String(a.advertiser_id), a]));
   return { conn, byId };
+}
+
+// ---------------------------------------------------------------------------
+// linked_posts — recent posts from TikTok accounts linked to the selected
+// accounts' Business Center(s), for the Spark step's "Pick from linked
+// accounts" picker. Picked posts go into spark_codes as
+// "linked:<identity_id>:<item_id>" (see parseLinkedPost). Read-only.
+// ---------------------------------------------------------------------------
+
+async function linkedPosts(supabase, body) {
+  const connectionId = body.connection_id;
+  const advertiserIds = uniq((body.advertiser_ids || []).map(String).filter(Boolean));
+  if (!connectionId) return json(400, { error: "connection_id is required" });
+  if (!advertiserIds.length) return json(400, { error: "Select at least one account first." });
+  const loaded = await loadConnAndAdvertisers(supabase, connectionId, advertiserIds);
+  if (loaded.error) return loaded.error;
+  const { conn, byId } = loaded;
+
+  // Linked identities belong to the BC, so one approved account per BC is enough.
+  const perBc = new Map();
+  for (const id of advertiserIds) {
+    const a = byId.get(id);
+    if (a && a.bc_id && advApproved(a) && !perBc.has(String(a.bc_id))) perBc.set(String(a.bc_id), a);
+  }
+  if (!perBc.size) return json(400, { error: "None of the selected accounts is an Approved account under a Business Center." });
+
+  const bcs = [];
+  await withClient(supabase, conn, async (client) => {
+    for (const [bcId, a] of perBc) {
+      bcs.push({ bc_id: bcId, bc_name: a.bc_name || bcId, accounts: await listLinkedPosts(client, a.advertiser_id, bcId) });
+    }
+  });
+  return json(200, { ok: true, bcs });
 }
 
 // ---------------------------------------------------------------------------

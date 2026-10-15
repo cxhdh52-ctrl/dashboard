@@ -612,8 +612,54 @@ async function listBcIdentities(client, advertiserId, bcId) {
       identity_id: String(x.identity_id || ""),
       identity_type: x.identity_type || (bcId ? "BC_AUTH_TT" : "TT_USER"),
       name: String(x.display_name || x.profile_name || x.nickname || x.identity_id || "").trim(),
+      username: x.username || null,
     }))
     .filter((x) => x.identity_id);
+}
+
+// A post from a TikTok account linked to the Business Center, used in place of
+// a Spark code: "linked:<identity_id>:<item_id>". BC-linked accounts need no
+// authorization code — the ad pulls the post through the BC_AUTH_TT identity.
+function parseLinkedPost(code) {
+  const m = /^linked:([^:\s]+):(\d{6,25})$/.exec(String(code || "").trim());
+  return m ? { identity_id: m[1], item_id: m[2] } : null;
+}
+
+// Recent posts from every TikTok account linked to the advertiser's BC, for the
+// Campaign Creator "Pick from linked accounts" picker. Read-only.
+async function listLinkedPosts(client, advertiserId, bcId, perAccount = 20) {
+  const identities = (await listBcIdentities(client, advertiserId, bcId)).filter((x) => x.identity_type === "BC_AUTH_TT");
+  const accounts = [];
+  for (const ident of identities) {
+    const acct = { identity_id: ident.identity_id, name: ident.name, username: ident.username, posts: [] };
+    try {
+      const d = await mcpThrottled(
+        client,
+        "identity_video_get",
+        {
+          advertiser_id: String(advertiserId),
+          identity_type: "BC_AUTH_TT",
+          identity_id: ident.identity_id,
+          identity_authorized_bc_id: String(bcId),
+          count: perAccount,
+        },
+        { tries: 3 }
+      );
+      acct.posts = (d?.video_list || d?.list || [])
+        .filter((p) => p.item_id)
+        .map((p) => ({
+          item_id: String(p.item_id),
+          text: p.text || "",
+          status: p.status || null,
+          poster_url: p.video_info?.poster_url || p.carousel_info?.image_info?.[0]?.url || null,
+          is_carousel: !!p.carousel_info,
+        }));
+    } catch (err) {
+      acct.error = err.message;
+    }
+    accounts.push(acct);
+  }
+  return accounts;
 }
 
 // Instant Page conversion event for the Sales objective (TikTok Instant Page,
@@ -876,7 +922,11 @@ async function createOneCampaign({
     await ensureLeadAdsTerm(client, advId);
   }
 
-  const spark = await resolveSparkCode(client, advId, sparkCode); // { item_id, identity_id, post_type }
+  // A linked-account post skips Spark-code resolution entirely.
+  const linked = parseLinkedPost(sparkCode);
+  const spark = linked
+    ? { item_id: linked.item_id, identity_id: linked.identity_id, post_type: "VIDEO" } // CAROUSEL handled by the format retry below
+    : await resolveSparkCode(client, advId, sparkCode); // { item_id, identity_id, post_type }
 
   let pageId = null;
   let pageName = null;
@@ -897,8 +947,9 @@ async function createOneCampaign({
   }
 
   // Identity: an explicit BC identity, or "auto" = the Spark code's own identity.
-  const resolvedIdentity =
-    identity && identity.auto
+  const resolvedIdentity = linked
+    ? { identity_id: linked.identity_id, identity_type: "BC_AUTH_TT" }
+    : identity && identity.auto
       ? { identity_id: spark.identity_id, identity_type: "AUTH_CODE" }
       : { identity_id: identity.identity_id, identity_type: identity.identity_type };
   if (!resolvedIdentity.identity_id) {
@@ -1093,6 +1144,8 @@ module.exports = {
   listInstantPages,
   newestInstantPage,
   listBcIdentities,
+  parseLinkedPost,
+  listLinkedPosts,
   instantPageConversion,
   ensureLeadAdsTerm,
   buildCampaignPayload,

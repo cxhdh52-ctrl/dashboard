@@ -40,6 +40,7 @@ import {
   loadRememberedForms,
   rememberForm,
   runCampaignCreator,
+  fetchLinkedPosts,
   listCampaignCreatorCampaigns,
   runManualDupe,
   trackerList,
@@ -2498,6 +2499,7 @@ function wireCampaignCreatorEvents() {
   document.getElementById("ccRunNext2").addEventListener("click", () => runGoStep(3));
   document.getElementById("ccRunNext3").addEventListener("click", () => runGoStep(4));
   document.getElementById("ccRunNext4").addEventListener("click", () => runGoStep(5));
+  document.getElementById("ccRunLinkedBtn").addEventListener("click", openCcLinkedPicker);
   document.getElementById("ccRunNext5").addEventListener("click", () => runGoStep(6));
   document.getElementById("ccRunCreate").addEventListener("click", submitCampaignCreator);
   document.getElementById("ccRunDone").addEventListener("click", () => { ccResetRunDraft(); closeCampaignCreatorModal(); });
@@ -3052,6 +3054,7 @@ function openRunWizard(tpl) {
   document.getElementById("ccRunBase").value = "";
   document.getElementById("ccRunSpark").value = "";
   document.getElementById("ccRunLinks").value = "";
+  document.getElementById("ccRunLinkedPicker").hidden = true;
   document.getElementById("ccRunFormId").value = "";
   document.getElementById("ccRunFormIdStatus").textContent = "";
   document.getElementById("ccRunTzBlocks").innerHTML = "";
@@ -3219,6 +3222,85 @@ function renderCcTzBlocks() {
     })
     .join("");
   document.getElementById("ccRunTzBlocks").innerHTML = html || `<p class="eng-hint">Select accounts first.</p>`;
+}
+
+// ---- Spark step: pick posts from TikTok accounts linked to the BC ----
+// Picked posts fill the Spark-code and post-link boxes as
+// "linked:<identity_id>:<item_id>" lines (no Spark code needed — see
+// parseLinkedPost on the server). Posts are spread across the selected
+// accounts in pick order: 1 pick → every account; N picks → round-robin.
+async function openCcLinkedPicker() {
+  const wrap = document.getElementById("ccRunLinkedPicker");
+  const advs = ccSelectedAdvs();
+  if (!advs.length) {
+    wrap.hidden = false;
+    wrap.innerHTML = `<p class="eng-hint">Select accounts first.</p>`;
+    return;
+  }
+  wrap.hidden = false;
+  wrap.innerHTML = `<div class="eng-placeholder busy">Loading linked accounts…</div>`;
+  try {
+    const { bcs } = await fetchLinkedPosts(ccState.run.connectionId, advs.map((a) => String(a.advertiser_id)));
+    renderCcLinkedPicker(bcs || []);
+  } catch (err) {
+    wrap.innerHTML = `<p class="modal-error">${escapeHtml(err.message)}</p>`;
+  }
+}
+
+function renderCcLinkedPicker(bcs) {
+  const wrap = document.getElementById("ccRunLinkedPicker");
+  const accounts = bcs.flatMap((b) => b.accounts || []);
+  if (!accounts.length) {
+    wrap.innerHTML = `<p class="eng-hint">No TikTok accounts are linked to this Business Center yet. Link one in Business Center → Assets → TikTok accounts.</p>`;
+    return;
+  }
+  const picked = []; // [{ identity_id, item_id, url }] in click order
+  const postUrl = (a, p) =>
+    `https://www.tiktok.com/@${a.username || "user"}/${p.is_carousel ? "photo" : "video"}/${p.item_id}`;
+  wrap.innerHTML =
+    accounts
+      .map((a, ai) => {
+        const posts = (a.posts || [])
+          .map(
+            (p, pi) => `<label class="cc-linked-post" data-a="${ai}" data-p="${pi}">
+              <input type="checkbox" />
+              ${p.poster_url ? `<img src="${escapeHtml(p.poster_url)}" alt="" loading="lazy" />` : `<div class="ph"></div>`}
+              <span class="cap">${escapeHtml(p.text || p.item_id)}</span>
+              ${p.status && p.status !== "ITEM_STATUS_PUBLIC" ? `<span class="flag">${escapeHtml(p.status.replace("ITEM_STATUS_", "").toLowerCase().replace(/_/g, " "))}</span>` : ""}
+            </label>`
+          )
+          .join("");
+        return `<div class="cc-linked-acct">${escapeHtml(a.name || a.username || a.identity_id)}${a.username ? ` · @${escapeHtml(a.username)}` : ""}</div>
+          ${a.error ? `<p class="modal-error">${escapeHtml(a.error)}</p>` : ""}
+          <div class="cc-linked-grid">${posts || `<p class="eng-hint">No posts yet.</p>`}</div>`;
+      })
+      .join("") +
+    `<div class="modal-actions"><button type="button" class="icon-btn primary" id="ccRunLinkedUse" disabled>Use selected</button></div>`;
+
+  const useBtn = document.getElementById("ccRunLinkedUse");
+  wrap.querySelectorAll(".cc-linked-post input").forEach((box) => {
+    box.addEventListener("change", () => {
+      const el = box.closest(".cc-linked-post");
+      const a = accounts[Number(el.dataset.a)];
+      const p = a.posts[Number(el.dataset.p)];
+      const i = picked.findIndex((x) => x.item_id === p.item_id);
+      if (box.checked && i < 0) picked.push({ identity_id: a.identity_id, item_id: p.item_id, url: postUrl(a, p) });
+      if (!box.checked && i >= 0) picked.splice(i, 1);
+      el.classList.toggle("picked", box.checked);
+      useBtn.disabled = !picked.length;
+      useBtn.textContent = picked.length ? `Use ${picked.length} selected` : "Use selected";
+    });
+  });
+  useBtn.addEventListener("click", () => {
+    const n = ccSelectedAdvs().length;
+    const rows = Array.from({ length: n }, (_, i) => picked[i % picked.length]);
+    ccState.run.spark = rows.map((x) => `linked:${x.identity_id}:${x.item_id}`).join("\n");
+    ccState.run.links = rows.map((x) => x.url).join("\n");
+    document.getElementById("ccRunSpark").value = ccState.run.spark;
+    document.getElementById("ccRunLinks").value = ccState.run.links;
+    renderCcSparkCounts();
+    wrap.hidden = true;
+  });
 }
 
 function renderCcSparkCounts() {
@@ -3436,7 +3518,7 @@ function renderCcReview() {
   };
 
   document.getElementById("ccRunReview").innerHTML =
-    `<div class="row"><span>Identity</span><strong>Auto — each Spark code's own identity</strong></div>` +
+    `<div class="row"><span>Identity</span><strong>${sc.some((c) => /^linked:/.test(c)) ? "Linked TikTok account (no Spark code) / Spark code's own identity" : "Auto — each Spark code's own identity"}</strong></div>` +
     (isLead
       ? `<div class="row"><span>Instant Form</span><strong>${escapeHtml(r.formLabel || r.formId || "—")}</strong></div>`
       : `<div class="row"><span>Optimization</span><strong>Conversion — Highest Volume (Instant Page, no pixel)</strong></div>`) +
@@ -3448,7 +3530,7 @@ function renderCcReview() {
         return `<div class="rev-acct">${escapeHtml(a.advertiser_name || id)}</div>
           <div class="row"><span>Campaign</span><strong>${escapeHtml(names[i])}</strong></div>
           <div class="row"><span>Start</span><strong>${escapeHtml(schedText(tz))} <em>(${escapeHtml(tz)})</em></strong></div>
-          <div class="row"><span>Spark code</span><strong>#${i + 1} · ${escapeHtml((sc[i] || "").slice(0, 10))}…</strong></div>
+          <div class="row"><span>Spark code</span><strong>#${i + 1} · ${/^linked:/.test(sc[i] || "") ? `linked post ${escapeHtml(sc[i].split(":")[2] || "")}` : `${escapeHtml((sc[i] || "").slice(0, 10))}…`}</strong></div>
           <div class="row"><span>Post link</span><strong>${escapeHtml((lc[i] || "").replace(/^https:\/\/(www\.)?/, "").slice(0, 44))}</strong></div>
           ${page}`;
       })
