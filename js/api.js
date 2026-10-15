@@ -246,6 +246,17 @@ export async function deleteTiktokCampaign(campaignId) {
   return readTiktokResponse(res, "Campaign delete failed");
 }
 
+// Local only: hide a campaign whose TikTok connection has expired (server
+// refuses while the connection is healthy). Leaves the campaign untouched on TikTok.
+export async function hideTiktokCampaign(campaignId) {
+  const res = await fetch("/.netlify/functions/tiktok-campaigns", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "hide_campaign", campaign_id: campaignId }),
+  });
+  return readTiktokResponse(res, "Couldn't hide the campaign");
+}
+
 // Set / clear a campaign's TikTok post URL. Pass "" to clear. No external calls.
 export async function setCampaignPostUrl(campaignId, tiktokPostUrl) {
   const res = await fetch("/.netlify/functions/tiktok-campaigns", {

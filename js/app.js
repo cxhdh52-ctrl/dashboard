@@ -16,6 +16,7 @@ import {
   setAdvertiserBudget,
   setConnectionNetwork,
   deleteTiktokCampaign,
+  hideTiktokCampaign,
   setCampaignPostUrl,
   queueEngagementComments,
   queueEngagementManual,
@@ -434,6 +435,7 @@ function wireEvents() {
     if (e.target.id === "deleteCampaignModal") closeDeleteCampaignModal();
   });
   document.getElementById("confirmDeleteCampaignBtn").addEventListener("click", confirmDeleteCampaign);
+  document.getElementById("hideDeleteCampaignBtn").addEventListener("click", hideExpiredCampaigns);
 
   // ---- rejection reason modal ----
   document.getElementById("closeRejectionReasonModal").addEventListener("click", closeRejectionReasonModal);
@@ -1025,7 +1027,48 @@ function openDeleteCampaignModal(sources) {
   const btn = document.getElementById("confirmDeleteCampaignBtn");
   btn.disabled = false;
   btn.textContent = deleteCampaignTargets.length > 1 ? `Delete ${deleteCampaignTargets.length} Campaigns` : "Delete Campaign";
+  document.getElementById("hideDeleteCampaignBtn").hidden = true;
+  deleteCampaignExpired = [];
   document.getElementById("deleteCampaignModal").classList.add("open");
+}
+
+// Campaigns whose delete failed because their TikTok connection expired —
+// offered "Remove from dashboard only" when they can't be reconnected.
+let deleteCampaignExpired = [];
+
+function dropCampaignLocally(s) {
+  state.tiktokCampaigns = state.tiktokCampaigns.filter((c) => String(c.campaign_id) !== String(s.campaignId));
+  delete state.adGroupsByCampaign[s.campaignId];
+  delete state.campaignMetrics[String(s.campaignId)];
+  state.expandedSources.delete(s.source);
+  state.selectedCampaigns.delete(String(s.campaignId));
+}
+
+async function hideExpiredCampaigns() {
+  const targets = deleteCampaignExpired;
+  if (!targets.length) return;
+  const btn = document.getElementById("hideDeleteCampaignBtn");
+  const errEl = document.getElementById("deleteCampaignError");
+  btn.disabled = true;
+  const failed = [];
+  for (const s of targets) {
+    try {
+      await hideTiktokCampaign(s.campaignId);
+      dropCampaignLocally(s);
+    } catch (err) {
+      failed.push(`${s.source}: ${err.message}`);
+    }
+  }
+  btn.disabled = false;
+  renderDetailBcSelector();
+  rebuildSources();
+  if (failed.length) {
+    errEl.textContent = `${failed.length} couldn't be removed — ${failed.join("; ")}`;
+    return;
+  }
+  closeDeleteCampaignModal();
+  setStatus(`${targets.length} campaign${targets.length === 1 ? "" : "s"} removed from Kryzxr Ads (left unchanged on TikTok).`, false);
+  loadTiktokCampaigns();
 }
 
 function closeDeleteCampaignModal() {
@@ -1050,19 +1093,15 @@ async function confirmDeleteCampaign() {
       lastRes = res;
       // Remove locally right away — whether TikTok deleted it or we hid it, it
       // should leave the table now. A background reload confirms.
-      state.tiktokCampaigns = state.tiktokCampaigns.filter((c) => String(c.campaign_id) !== String(s.campaignId));
-      delete state.adGroupsByCampaign[s.campaignId];
-      delete state.campaignMetrics[String(s.campaignId)];
-      state.expandedSources.delete(s.source);
-      state.selectedCampaigns.delete(String(s.campaignId));
+      dropCampaignLocally(s);
     } catch (err) {
       failed.push({ source: s.source, message: err.message });
       // Expired connection: the rest would fail identically — stop and count
       // them as failed for the same reason instead of hammering TikTok.
       if (err.code === "reconnect_required") {
-        for (const rest of targets.slice(targets.indexOf(s) + 1)) {
-          failed.push({ source: rest.source, message: err.message });
-        }
+        const rest = targets.slice(targets.indexOf(s) + 1);
+        for (const t of rest) failed.push({ source: t.source, message: err.message });
+        deleteCampaignExpired = [s, ...rest];
         break;
       }
     }
@@ -1078,6 +1117,9 @@ async function confirmDeleteCampaign() {
     for (const f of failed) byMessage.set(f.message, [...(byMessage.get(f.message) || []), f.source]);
     const lines = [...byMessage].map(([msg, sources]) => `${sources.join(", ")}: ${msg}`);
     errEl.textContent = `${failed.length} failed — ${lines.join("; ")}`;
+    const hideBtn = document.getElementById("hideDeleteCampaignBtn");
+    hideBtn.hidden = !deleteCampaignExpired.length;
+    hideBtn.textContent = `Remove ${deleteCampaignExpired.length} from dashboard only`;
     return;
   }
 

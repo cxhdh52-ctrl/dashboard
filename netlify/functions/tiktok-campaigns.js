@@ -376,8 +376,9 @@ exports.handler = async function (event) {
             .from("tiktok_connections")
             .update({ status: "error", updated_at: new Date().toISOString() })
             .eq("id", r.connection.id);
+          const connName = r.connection.label || r.advertiser.bc_name || "this TikTok connection";
           return json(401, {
-            error: "TikTok connection expired — reconnect it, then retry.",
+            error: `TikTok connection “${connName}” expired — reconnect it with Connect New BC (logged in as that account), then retry.`,
             code: "reconnect_required",
             connection_id: r.connection.id,
           });
@@ -499,6 +500,32 @@ exports.handler = async function (event) {
         outcome: "deleted",
         message: `Campaign “${campaignName}” was deleted from TikTok.`,
       });
+    }
+
+    // ---- write (local only): hide a campaign whose TikTok connection is dead.
+    // For campaigns that can't be deleted on TikTok because the connection's
+    // tokens expired and it can't be reconnected. Does NOT touch TikTok — the
+    // campaign keeps whatever status it has there. Refused while the connection
+    // is healthy, so a live, deletable campaign can't be silently hidden. ----
+    if (action === "hide_campaign") {
+      if (!body.campaign_id) return json(400, { error: "campaign_id is required" });
+      const r = await resolveTrackedCampaign(supabase, body.campaign_id);
+      if (r.error) return r.error;
+      if (r.connection.status !== "error") {
+        return json(409, { error: "This campaign's TikTok connection is active — delete it normally instead." });
+      }
+      const campaignId = String(r.campaign.campaign_id);
+      const upd = await supabase
+        .from("tiktok_campaigns")
+        .update({ hidden: true, hidden_at: new Date().toISOString() })
+        .eq("campaign_id", campaignId);
+      if (upd.error) return json(500, { error: "Couldn't hide the campaign", details: sbErr(upd.error) });
+      try {
+        await supabase.from("engagement_orders").delete().eq("campaign_id", campaignId);
+      } catch (_) {
+        /* best-effort */
+      }
+      return json(200, { ok: true, campaign_id: campaignId, outcome: "hidden" });
     }
 
     if (action === "set_campaign_status") {
