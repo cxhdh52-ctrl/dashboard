@@ -651,7 +651,7 @@ tr.expanded + tr.row-detail .row-detail-inner { max-height: 640px; overflow-y: a
 .modal h3 { font-size: 16px; margin-bottom: 8px; }
 .modal p { font-size: 12.5px; color: var(--text-2); line-height: 1.5; margin: 0 0 14px; }
 .modal input { width: 100%; margin-bottom: 14px; }
-.modal-actions { display: flex; justify-content: flex-end; gap: 10px; }
+.modal-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; }
 .modal-error { font-size: 12.5px; color: var(--loss); min-height: 16px; margin: -6px 0 10px; }
 
 /* ---- delete-campaign modal ---- */

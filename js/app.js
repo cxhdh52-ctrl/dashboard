@@ -1028,6 +1028,7 @@ function openDeleteCampaignModal(sources) {
   btn.disabled = false;
   btn.textContent = deleteCampaignTargets.length > 1 ? `Delete ${deleteCampaignTargets.length} Campaigns` : "Delete Campaign";
   document.getElementById("hideDeleteCampaignBtn").hidden = true;
+  btn.hidden = false;
   deleteCampaignExpired = [];
   document.getElementById("deleteCampaignModal").classList.add("open");
 }
@@ -1119,6 +1120,9 @@ async function confirmDeleteCampaign() {
     errEl.textContent = `${failed.length} failed — ${lines.join("; ")}`;
     const hideBtn = document.getElementById("hideDeleteCampaignBtn");
     hideBtn.hidden = !deleteCampaignExpired.length;
+    // Retrying Delete can't succeed until the connection is reconnected (which
+    // reloads the page anyway), so swap it out rather than crowd the row.
+    btn.hidden = !!deleteCampaignExpired.length;
     hideBtn.textContent = `Remove ${deleteCampaignExpired.length} from dashboard only`;
     return;
   }
