@@ -3226,18 +3226,17 @@ function renderCcTzBlocks() {
 
 // ---- Spark step: pick posts from TikTok accounts linked to the BC ----
 // Picked posts fill the Spark-code and post-link boxes as
-// "linked:<identity_id>:<item_id>" lines (no Spark code needed — see
-// parseLinkedPost on the server). Posts are spread across the selected
-// accounts in pick order: 1 pick → every account; N picks → round-robin.
+// "linked:<identity_id>:<item_id>[:photo]" lines (no Spark code needed — see
+// parseLinkedPost on the server). One separate post per ad account: pick
+// exactly as many posts as selected accounts; pick order = account order.
 async function openCcLinkedPicker() {
   const wrap = document.getElementById("ccRunLinkedPicker");
   const advs = ccSelectedAdvs();
+  wrap.hidden = false;
   if (!advs.length) {
-    wrap.hidden = false;
     wrap.innerHTML = `<p class="eng-hint">Select accounts first.</p>`;
     return;
   }
-  wrap.hidden = false;
   wrap.innerHTML = `<div class="eng-placeholder busy">Loading linked accounts…</div>`;
   try {
     const { bcs } = await fetchLinkedPosts(ccState.run.connectionId, advs.map((a) => String(a.advertiser_id)));
@@ -3254,19 +3253,25 @@ function renderCcLinkedPicker(bcs) {
     wrap.innerHTML = `<p class="eng-hint">No TikTok accounts are linked to this Business Center yet. Link one in Business Center → Assets → TikTok accounts.</p>`;
     return;
   }
-  const picked = []; // [{ identity_id, item_id, url }] in click order
+  const advs = ccSelectedAdvs();
+  const need = advs.length;
+  const picked = []; // [{ identity_id, item_id, is_carousel, url, label }] in click order = account order
   const postUrl = (a, p) =>
     `https://www.tiktok.com/@${a.username || "user"}/${p.is_carousel ? "photo" : "video"}/${p.item_id}`;
+  const statusLabel = (st) => st.replace("ITEM_STATUS_", "").toLowerCase().replace(/_/g, " ");
+
   wrap.innerHTML =
+    `<p class="eng-hint" id="ccLinkedHint"></p>` +
     accounts
       .map((a, ai) => {
         const posts = (a.posts || [])
           .map(
             (p, pi) => `<label class="cc-linked-post" data-a="${ai}" data-p="${pi}">
               <input type="checkbox" />
+              <span class="num" hidden></span>
               ${p.poster_url ? `<img src="${escapeHtml(p.poster_url)}" alt="" loading="lazy" />` : `<div class="ph"></div>`}
-              <span class="cap">${escapeHtml(p.text || p.item_id)}</span>
-              ${p.status && p.status !== "ITEM_STATUS_PUBLIC" ? `<span class="flag">${escapeHtml(p.status.replace("ITEM_STATUS_", "").toLowerCase().replace(/_/g, " "))}</span>` : ""}
+              <span class="cap">${p.is_carousel ? "🖼 Slideshow · " : ""}${escapeHtml(p.text || p.item_id)}</span>
+              ${p.status && p.status !== "ITEM_STATUS_PUBLIC" ? `<span class="flag">${escapeHtml(statusLabel(p.status))}</span>` : ""}
             </label>`
           )
           .join("");
@@ -3275,32 +3280,57 @@ function renderCcLinkedPicker(bcs) {
           <div class="cc-linked-grid">${posts || `<p class="eng-hint">No posts yet.</p>`}</div>`;
       })
       .join("") +
-    `<div class="modal-actions"><button type="button" class="icon-btn primary" id="ccRunLinkedUse" disabled>Use selected</button></div>`;
+    `<div class="cc-namemap" id="ccLinkedMap"></div>
+     <div class="modal-actions"><button type="button" class="icon-btn primary" id="ccRunLinkedUse" disabled>Use selected</button></div>`;
 
   const useBtn = document.getElementById("ccRunLinkedUse");
+  const render = () => {
+    document.getElementById("ccLinkedHint").textContent =
+      `Pick ${need} post${need === 1 ? "" : "s"} — one separate post per ad account, in account order (${picked.length}/${need}).`;
+    wrap.querySelectorAll(".cc-linked-post").forEach((el) => {
+      const p = accounts[Number(el.dataset.a)].posts[Number(el.dataset.p)];
+      const k = picked.findIndex((x) => x.item_id === p.item_id);
+      const num = el.querySelector(".num");
+      num.hidden = k < 0;
+      num.textContent = k + 1;
+      el.classList.toggle("picked", k >= 0);
+      el.querySelector("input").checked = k >= 0;
+    });
+    document.getElementById("ccLinkedMap").innerHTML = advs
+      .map((adv, i) => `<div class="row"><span>${escapeHtml(adv.advertiser_name || String(adv.advertiser_id))}</span><strong>${picked[i] ? escapeHtml(picked[i].label) : "—"}</strong></div>`)
+      .join("");
+    useBtn.disabled = picked.length !== need;
+    useBtn.textContent = picked.length === need ? `Use ${need} post${need === 1 ? "" : "s"}` : `Pick ${need - picked.length} more`;
+  };
+
   wrap.querySelectorAll(".cc-linked-post input").forEach((box) => {
     box.addEventListener("change", () => {
       const el = box.closest(".cc-linked-post");
       const a = accounts[Number(el.dataset.a)];
       const p = a.posts[Number(el.dataset.p)];
-      const i = picked.findIndex((x) => x.item_id === p.item_id);
-      if (box.checked && i < 0) picked.push({ identity_id: a.identity_id, item_id: p.item_id, url: postUrl(a, p) });
-      if (!box.checked && i >= 0) picked.splice(i, 1);
-      el.classList.toggle("picked", box.checked);
-      useBtn.disabled = !picked.length;
-      useBtn.textContent = picked.length ? `Use ${picked.length} selected` : "Use selected";
+      const k = picked.findIndex((x) => x.item_id === p.item_id);
+      if (box.checked && k < 0 && picked.length < need) {
+        picked.push({
+          identity_id: a.identity_id,
+          item_id: p.item_id,
+          is_carousel: p.is_carousel,
+          url: postUrl(a, p),
+          label: `${p.is_carousel ? "Slideshow" : "Video"} · @${a.username || a.name} · ${(p.text || p.item_id).slice(0, 24)}`,
+        });
+      }
+      if (!box.checked && k >= 0) picked.splice(k, 1);
+      render();
     });
   });
   useBtn.addEventListener("click", () => {
-    const n = ccSelectedAdvs().length;
-    const rows = Array.from({ length: n }, (_, i) => picked[i % picked.length]);
-    ccState.run.spark = rows.map((x) => `linked:${x.identity_id}:${x.item_id}`).join("\n");
-    ccState.run.links = rows.map((x) => x.url).join("\n");
+    ccState.run.spark = picked.map((x) => `linked:${x.identity_id}:${x.item_id}${x.is_carousel ? ":photo" : ""}`).join("\n");
+    ccState.run.links = picked.map((x) => x.url).join("\n");
     document.getElementById("ccRunSpark").value = ccState.run.spark;
     document.getElementById("ccRunLinks").value = ccState.run.links;
     renderCcSparkCounts();
     wrap.hidden = true;
   });
+  render();
 }
 
 function renderCcSparkCounts() {

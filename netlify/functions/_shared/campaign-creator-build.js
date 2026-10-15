@@ -618,11 +618,24 @@ async function listBcIdentities(client, advertiserId, bcId) {
 }
 
 // A post from a TikTok account linked to the Business Center, used in place of
-// a Spark code: "linked:<identity_id>:<item_id>". BC-linked accounts need no
-// authorization code — the ad pulls the post through the BC_AUTH_TT identity.
+// a Spark code: "linked:<identity_id>:<item_id>" (":photo" suffix for a photo
+// slideshow). BC-linked accounts need no authorization code — the ad pulls the
+// post through the BC_AUTH_TT identity.
 function parseLinkedPost(code) {
-  const m = /^linked:([^:\s]+):(\d{6,25})$/.exec(String(code || "").trim());
-  return m ? { identity_id: m[1], item_id: m[2] } : null;
+  const m = /^linked:([^:\s]+):(\d{6,25})(:photo)?$/.exec(String(code || "").trim());
+  return m ? { identity_id: m[1], item_id: m[2], post_type: m[3] ? "CAROUSEL" : "VIDEO" } : null;
+}
+
+// First http(s) URL anywhere inside a value (carousel_info's image shape varies).
+function firstUrl(v) {
+  if (typeof v === "string") return /^https?:\/\//.test(v) ? v : null;
+  if (v && typeof v === "object") {
+    for (const x of Object.values(v)) {
+      const u = firstUrl(x);
+      if (u) return u;
+    }
+  }
+  return null;
 }
 
 // Recent posts from every TikTok account linked to the advertiser's BC, for the
@@ -632,31 +645,40 @@ async function listLinkedPosts(client, advertiserId, bcId, perAccount = 20) {
   const accounts = [];
   for (const ident of identities) {
     const acct = { identity_id: ident.identity_id, name: ident.name, username: ident.username, posts: [] };
-    try {
-      const d = await mcpThrottled(
-        client,
-        "identity_video_get",
-        {
-          advertiser_id: String(advertiserId),
-          identity_type: "BC_AUTH_TT",
-          identity_id: ident.identity_id,
-          identity_authorized_bc_id: String(bcId),
-          count: perAccount,
-        },
-        { tries: 3 }
-      );
-      acct.posts = (d?.video_list || d?.list || [])
-        .filter((p) => p.item_id)
-        .map((p) => ({
-          item_id: String(p.item_id),
-          text: p.text || "",
-          status: p.status || null,
-          poster_url: p.video_info?.poster_url || p.carousel_info?.image_info?.[0]?.url || null,
-          is_carousel: !!p.carousel_info,
-        }));
-    } catch (err) {
-      acct.error = err.message;
+    // identity_video_get returns only one post type per call (default VIDEO),
+    // so fetch videos and photo slideshows separately.
+    for (const itemType of ["VIDEO", "CAROUSEL"]) {
+      try {
+        const d = await mcpThrottled(
+          client,
+          "identity_video_get",
+          {
+            advertiser_id: String(advertiserId),
+            identity_type: "BC_AUTH_TT",
+            identity_id: ident.identity_id,
+            identity_authorized_bc_id: String(bcId),
+            item_type: itemType,
+            count: perAccount,
+          },
+          { tries: 3 }
+        );
+        for (const p of d?.video_list || d?.list || []) {
+          if (!p.item_id) continue;
+          const isCarousel = itemType === "CAROUSEL";
+          acct.posts.push({
+            item_id: String(p.item_id),
+            text: p.text || "",
+            status: p.status || null,
+            poster_url: (isCarousel ? firstUrl(p.carousel_info) : p.video_info?.poster_url) || null,
+            is_carousel: isCarousel,
+          });
+        }
+      } catch (err) {
+        acct.error = [acct.error, `${itemType === "CAROUSEL" ? "slideshows" : "videos"}: ${err.message}`].filter(Boolean).join("; ");
+      }
     }
+    // Newest first across both types (item_ids are time-ordered snowflakes).
+    acct.posts.sort((a, b) => (BigInt(b.item_id) > BigInt(a.item_id) ? 1 : -1));
     accounts.push(acct);
   }
   return accounts;
@@ -925,7 +947,7 @@ async function createOneCampaign({
   // A linked-account post skips Spark-code resolution entirely.
   const linked = parseLinkedPost(sparkCode);
   const spark = linked
-    ? { item_id: linked.item_id, identity_id: linked.identity_id, post_type: "VIDEO" } // CAROUSEL handled by the format retry below
+    ? { item_id: linked.item_id, identity_id: linked.identity_id, post_type: linked.post_type }
     : await resolveSparkCode(client, advId, sparkCode); // { item_id, identity_id, post_type }
 
   let pageId = null;
