@@ -66,6 +66,43 @@ exports.handler = async function (event) {
   try {
     const supabase = getSupabase();
 
+    // ---- read-only diagnostic: every tool the TikTok MCP server exposes
+    // (GET ?tools=1). Uses the most recently refreshed active connection. ----
+    if (event.httpMethod === "GET" && (event.queryStringParameters || {}).tools) {
+      const { data: connection } = await supabase
+        .from("tiktok_connections")
+        .select("*")
+        .eq("status", "active")
+        .order("updated_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (!connection) return json(404, { error: "No active TikTok connection." });
+      const { serverUrl, redirectUrl } = resolveConfig();
+      const provider = new SupabaseOAuthProvider({ supabase, serverUrl, redirectUrl, connection });
+      const { client } = await connectMcp({ provider, serverUrl });
+      try {
+        const tools = [];
+        let cursor;
+        do {
+          const page = await client.listTools(cursor ? { cursor } : {});
+          tools.push(...page.tools);
+          cursor = page.nextCursor;
+        } while (cursor);
+        return json(200, {
+          count: tools.length,
+          tools: tools
+            .map((t) => ({
+              name: t.name,
+              description: (t.description || "").slice(0, 300),
+              params: Object.keys((t.inputSchema && t.inputSchema.properties) || {}),
+            }))
+            .sort((a, b) => a.name.localeCompare(b.name)),
+        });
+      } finally {
+        await client.close().catch(() => {});
+      }
+    }
+
     if (event.httpMethod === "GET") {
       const [connectionsRes, advertisersRes] = await Promise.all([
         readConnections(supabase),
