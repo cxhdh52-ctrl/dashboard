@@ -67,16 +67,15 @@ exports.handler = async function (event) {
     const supabase = getSupabase();
 
     // ---- read-only diagnostic: every tool the TikTok MCP server exposes
-    // (GET ?tools=1). Uses the most recently refreshed active connection. ----
+    // (GET ?tools=1). Prefers an active connection, else the most recently
+    // updated one (an "error" flag doesn't always mean the token is dead). ----
     if (event.httpMethod === "GET" && (event.queryStringParameters || {}).tools) {
-      const { data: connection } = await supabase
+      const { data: conns } = await supabase
         .from("tiktok_connections")
         .select("*")
-        .eq("status", "active")
-        .order("updated_at", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      if (!connection) return json(404, { error: "No active TikTok connection." });
+        .order("updated_at", { ascending: false });
+      const connection = (conns || []).find((c) => c.status === "active") || (conns || [])[0];
+      if (!connection) return json(404, { error: "No TikTok connection." });
       const { serverUrl, redirectUrl } = resolveConfig();
       const provider = new SupabaseOAuthProvider({ supabase, serverUrl, redirectUrl, connection });
       const { client } = await connectMcp({ provider, serverUrl });
