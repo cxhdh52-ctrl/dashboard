@@ -16,6 +16,7 @@ const {
   checkPassword,
   SupabaseOAuthProvider,
   connectMcp,
+  mcpCall,
   discoverAndStoreAdvertisers,
   json,
 } = require("./_shared/tiktok-mcp");
@@ -100,6 +101,70 @@ exports.handler = async function (event) {
       } finally {
         await client.close().catch(() => {});
       }
+    }
+
+    // ---- read-only diagnostic: TikTok accounts linked to each BC (Spark Ads
+    // identities usable without auth codes) + their latest posts
+    // (GET ?identities=1). ----
+    if (event.httpMethod === "GET" && (event.queryStringParameters || {}).identities) {
+      const { data: conns } = await supabase.from("tiktok_connections").select("*").eq("status", "active");
+      if (!(conns || []).length) return json(404, { error: "No active TikTok connection." });
+      const { data: advs } = await supabase
+        .from("tiktok_advertisers")
+        .select("connection_id, advertiser_id, bc_id, bc_name, status")
+        .eq("status", "STATUS_ENABLE");
+      const { serverUrl, redirectUrl } = resolveConfig();
+      const out = [];
+      for (const connection of conns) {
+        // One enabled ad account per BC is enough — BC-linked identities are
+        // shared across the BC's ad accounts.
+        const perBc = new Map();
+        for (const a of advs || []) {
+          if (a.connection_id === connection.id && a.bc_id && !perBc.has(a.bc_id)) perBc.set(a.bc_id, a);
+        }
+        const provider = new SupabaseOAuthProvider({ supabase, serverUrl, redirectUrl, connection });
+        const { client } = await connectMcp({ provider, serverUrl });
+        try {
+          for (const a of perBc.values()) {
+            const entry = { bc_name: a.bc_name, bc_id: a.bc_id, advertiser_id: a.advertiser_id, identities: [] };
+            try {
+              const res = await mcpCall(client, "identity_get", {
+                advertiser_id: String(a.advertiser_id),
+                identity_type: "BC_AUTH_TT",
+                identity_authorized_bc_id: String(a.bc_id),
+                page_size: 100,
+              });
+              for (const id of (res && (res.identity_list || res.list)) || []) {
+                const ident = { ...id, latest_posts: [] };
+                try {
+                  const v = await mcpCall(client, "identity_video_get", {
+                    advertiser_id: String(a.advertiser_id),
+                    identity_type: "BC_AUTH_TT",
+                    identity_id: id.identity_id,
+                    identity_authorized_bc_id: String(a.bc_id),
+                    count: 5,
+                  });
+                  ident.latest_posts = ((v && (v.video_list || v.list)) || []).map((p) => ({
+                    item_id: p.item_id,
+                    text: p.text,
+                    auth_info: p.auth_info,
+                    status: p.status,
+                  }));
+                } catch (err) {
+                  ident.posts_error = err.message;
+                }
+                entry.identities.push(ident);
+              }
+            } catch (err) {
+              entry.error = err.message;
+            }
+            out.push(entry);
+          }
+        } finally {
+          await client.close().catch(() => {});
+        }
+      }
+      return json(200, { bcs: out });
     }
 
     if (event.httpMethod === "GET") {
