@@ -1205,7 +1205,7 @@ function hourFromStatTimeHour(raw) {
 // would only cover that one hour) — this is exactly equivalent to the old
 // single-row-per-campaign math when withHourly is off, since summing one row
 // is a no-op.
-async function loadCampaignMetricsForAdvertiser(client, advertiserId, { date, withHourly = false } = {}) {
+async function loadCampaignMetricsForAdvertiser(client, advertiserId, { date, startDate = null, withHourly = false } = {}) {
   const advId = String(advertiserId);
   // withHourly splits each campaign across multiple hour-rows, so cpm/cpa
   // can't trust any single row's own value (each only covers that hour) —
@@ -1225,7 +1225,7 @@ async function loadCampaignMetricsForAdvertiser(client, advertiserId, { date, wi
       advertiser_id: advId,
       dimensions: withHourly ? ["campaign_id", "stat_time_hour"] : ["campaign_id"],
       metrics: CAMPAIGN_METRIC_FIELDS,
-      start_date: date,
+      start_date: startDate || date, // startDate: optional range start (auto-stop's lifetime spend)
       end_date: date,
       page,
       page_size: 1000,

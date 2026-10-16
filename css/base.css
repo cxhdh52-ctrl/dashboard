@@ -1161,3 +1161,60 @@ select.tracker-type-select.tracker-type-slides {
   .sm-grid { grid-template-columns: 1fr; }
   .sm-preview { max-height: none; }
 }
+
+/* Tools drawer: inline state pill (Auto-stop ON/OFF) */
+.tools-item-state {
+  margin-left: auto; font-size: 10.5px; font-weight: 700; letter-spacing: 0.03em;
+  padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-2);
+}
+.tools-item-state.on { color: var(--profit); border-color: color-mix(in srgb, var(--profit) 55%, transparent); }
+.tools-item-state.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 55%, transparent); }
+
+/* ---------------- Creative Library ---------------- */
+.cl-modal { width: 1080px; }
+.cl-pane { display: flex; flex-direction: column; min-height: 0; flex: 1 1 auto; }
+.cl-pane[hidden] { display: none; }
+.cl-add { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+.cl-add textarea { flex: 1 1 320px; margin: 0; min-height: 38px; resize: vertical; }
+.cl-add input { width: 150px; margin: 0; }
+.cl-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.cl-toolbar input[type="text"] { width: 240px; margin: 0; }
+.cl-toolbar select { max-width: 340px; }
+.cl-check { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-1); cursor: pointer; }
+.cl-check input { width: auto; margin: 0; accent-color: var(--accent); }
+.cl-summary { margin-left: auto; font-size: 12px; color: var(--text-1); }
+.cl-angle-list { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; flex: 1 1 auto; min-height: 0; padding-right: 4px; }
+.cl-angle { background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 10px 12px; }
+.cl-angle.archived { opacity: 0.55; }
+.cl-angle-main { display: flex; align-items: flex-start; gap: 10px; }
+.cl-angle-main > .status-badge { flex: none; min-width: 82px; text-align: center; margin-top: 1px; }
+.cl-angle-body { flex: 1; min-width: 0; }
+.cl-angle-text { font-size: 13.5px; font-weight: 600; color: var(--text-0); line-height: 1.4; word-break: break-word; }
+.cl-angle-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 4px; font-size: 11.5px; color: var(--text-2); }
+.cl-offer { color: var(--accent-2); font-weight: 700; }
+.cl-pos { color: var(--profit) !important; font-weight: 600; }
+.cl-neg { color: var(--loss) !important; font-weight: 600; }
+.cl-angle-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; flex: none; }
+.cl-angle-actions .icon-btn { padding: 5px 10px; font-size: 12px; }
+.cl-edit { display: flex; gap: 6px; flex-wrap: wrap; }
+.cl-edit input { margin: 0; }
+.cl-edit .cl-edit-text { flex: 1 1 260px; }
+.cl-edit .cl-edit-offer { width: 130px; }
+.cl-vary { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border); }
+.cl-vary-controls { display: flex; gap: 8px; flex-wrap: wrap; }
+.cl-vary-controls input { flex: 1 1 260px; margin: 0; }
+.cl-var-list { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.cl-var { display: flex; gap: 10px; align-items: flex-start; padding: 7px 9px; border-radius: var(--radius-sm); background: var(--bg-1); border: 1px solid var(--border); cursor: pointer; }
+.cl-var input { width: auto; margin: 3px 0 0; accent-color: var(--accent); flex: none; }
+.cl-var-text { display: block; font-size: 13px; font-weight: 600; color: var(--text-0); }
+.cl-var-why { display: block; font-size: 11.5px; color: var(--text-2); margin-top: 2px; }
+.cl-vary-foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.cl-vary-foot .eng-hint { flex: 1 1 240px; font-size: 11.5px; }
+.cl-camp-table { min-width: 720px; }
+.cl-camp-table select { max-width: 240px; padding: 5px 8px; font-size: 12px; }
+.cl-camp-table input[type="checkbox"] { width: auto; margin: 0; accent-color: var(--accent); }
+@media (max-width: 760px) {
+  .cl-angle-main { flex-wrap: wrap; }
+  .cl-angle-actions { justify-content: flex-start; width: 100%; }
+  .cl-summary { margin-left: 0; }
+}

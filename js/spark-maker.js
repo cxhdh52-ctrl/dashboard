@@ -7,6 +7,7 @@
 const MEDIABUNNY_URL = "https://cdn.jsdelivr.net/npm/mediabunny@1.59.1/dist/bundles/mediabunny.min.mjs";
 const JSZIP_URL = "https://cdn.jsdelivr.net/npm/jszip@3.10.1/+esm";
 const SETTINGS_KEY = "sparkMaker.v1";
+const LIBRARY_ENDPOINT = "/.netlify/functions/creative-library";
 
 const W = 1080, H = 1920;
 // TikTok's own UI covers the top tabs, the right-hand action buttons and the
@@ -531,11 +532,23 @@ function setBusy(busy) {
   document.querySelectorAll("#sparkMakerModal [data-sm-lock]").forEach((el) => (el.disabled = busy));
 }
 
+// Every angle you make sparks with lands in the Creative Library (duplicates
+// are skipped server-side), so it can be tagged on campaigns later.
+// Fire-and-forget — the library not being set up never blocks rendering.
+function registerAngles(angles) {
+  fetch(LIBRARY_ENDPOINT, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "add_angles", texts: angles, source: "spark_maker" }),
+  }).catch(() => {});
+}
+
 async function generate() {
   if (sm.busy || !canGenerate()) return;
   const angles = angleList();
   const opts = readOpts();
   saveSettings();
+  registerAngles(angles);
   clearResults();
   sm.cancelled = false;
   setBusy(true);
@@ -799,6 +812,16 @@ function open() {
 
 function close() {
   $("sparkMakerModal").classList.remove("open");
+}
+
+// Opens the Spark Maker with these angles in the box (from the Creative
+// Library's "Spark" / "Save & open Spark Maker").
+export function openSparkMakerWithAngles(texts) {
+  if (Array.isArray(texts) && texts.length) {
+    $("smAngles").value = texts.join("\n");
+    saveSettings();
+  }
+  open();
 }
 
 export function initSparkMaker({ onOpen } = {}) {

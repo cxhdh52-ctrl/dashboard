@@ -685,3 +685,13 @@ export async function restoreSource(sourceName) {
   });
   return readTiktokResponse(res, "Couldn't restore this row");
 }
+
+// Auto-stop switch + threshold. Pass nothing to read, or { enabled } / { threshold } to change.
+export async function autoStopSettings(patch = {}) {
+  const res = await fetch("/.netlify/functions/tiktok-campaigns", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "auto_stop_settings", ...patch }),
+  });
+  return readTiktokResponse(res, "Couldn't update auto-stop"); // { settings: { enabled, threshold } }
+}

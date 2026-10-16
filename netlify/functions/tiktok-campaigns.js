@@ -68,37 +68,45 @@ const { applyAutoBudgetBumps } = require("./_shared/auto-budget-bump");
 const { discoverStrayCampaigns } = require("./_shared/stray-campaigns");
 const {
   fetchEarningsToday,
-  applyLifecycleDecisions,
-  foldStaleLifecycleAccumBeforeReset,
-} = require("./_shared/testing-scale-engine");
+  applyAutoStop,
+  readAutoStopSettings,
+  writeAutoStopSettings,
+} = require("./_shared/auto-stop");
 
 const CAMPAIGN_COLUMNS_BASE =
   "campaign_id, connection_id, advertiser_id, advertiser_name, campaign_name, objective_type, budget, budget_mode, campaign_operation_status, campaign_secondary_status, effective_status, effective_tone, status_detail, ad_count, active_ad_count, create_time, updated_at";
 const CAMPAIGN_COLUMNS = `${CAMPAIGN_COLUMNS_BASE}, bc_id, bc_name, affiliate_network`;
-const CAMPAIGN_COLUMNS_WITH_LIFECYCLE = `${CAMPAIGN_COLUMNS}, lifecycle_state`;
 
 async function readCampaigns(supabase) {
   let res = await supabase
     .from("tiktok_campaigns")
-    .select(`${CAMPAIGN_COLUMNS_WITH_LIFECYCLE}, hidden`)
+    .select(`${CAMPAIGN_COLUMNS}, hidden`)
     .order("campaign_name", { ascending: true });
   if (res.error && /hidden/.test(res.error.message || "")) {
     // hidden column not migrated yet (supabase/tiktok_campaign_hidden.sql)
-    res = await supabase.from("tiktok_campaigns").select(CAMPAIGN_COLUMNS_WITH_LIFECYCLE).order("campaign_name", { ascending: true });
-  }
-  if (res.error && /lifecycle_state/.test(res.error.message || "")) {
-    // testing_scale_lifecycle.sql not migrated yet — degrade to "testing" default
     res = await supabase.from("tiktok_campaigns").select(CAMPAIGN_COLUMNS).order("campaign_name", { ascending: true });
-    if (!res.error) res.data = (res.data || []).map((c) => ({ ...c, lifecycle_state: "testing" }));
   }
   if (res.error && /bc_(id|name)|affiliate_network/.test(res.error.message || "")) {
     res = await supabase.from("tiktok_campaigns").select(CAMPAIGN_COLUMNS_BASE).order("campaign_name", { ascending: true });
     if (!res.error)
-      res.data = (res.data || []).map((c) => ({ ...c, bc_id: null, bc_name: null, affiliate_network: "GLITCHY", lifecycle_state: "testing" }));
+      res.data = (res.data || []).map((c) => ({ ...c, bc_id: null, bc_name: null, affiliate_network: "GLITCHY" }));
   }
   // Campaigns hidden locally (TikTok refused deletion — suspended account) never
   // reach the dashboard.
   if (!res.error) res.data = (res.data || []).filter((c) => !c.hidden);
+
+  // Auto-stop columns, merged from a SEPARATE query so supabase/auto_stop.sql
+  // is optional — without it every row just has no auto-stop info.
+  if (!res.error) {
+    const as = await supabase.from("tiktok_campaigns").select("campaign_id, lifetime_profit, auto_stopped_at, auto_stop_reason");
+    if (!as.error) {
+      const byId = new Map((as.data || []).map((r) => [String(r.campaign_id), r]));
+      res.data = (res.data || []).map((c) => {
+        const a = byId.get(String(c.campaign_id)) || {};
+        return { ...c, lifetime_profit: a.lifetime_profit ?? null, auto_stopped_at: a.auto_stopped_at ?? null, auto_stop_reason: a.auto_stop_reason ?? null };
+      });
+    }
+  }
 
   // Engagement-foundation columns, merged from a SEPARATE query so the migration
   // (supabase/tiktok_engagement.sql) is fully optional — without it every row
@@ -294,6 +302,18 @@ exports.handler = async function (event) {
 
     // ---- read-only: today's live TikTok campaign metrics (spend/CPM/CPA) ----
     if (action === "metrics") return campaignMetricsForScopedAdvertisers(supabase);
+
+    // ---- auto-stop on/off + threshold (app_settings "auto_stop") ----
+    if (action === "auto_stop_settings") {
+      if (body.enabled === undefined && body.threshold === undefined) {
+        return json(200, { ok: true, settings: await readAutoStopSettings(supabase) });
+      }
+      try {
+        return json(200, { ok: true, settings: await writeAutoStopSettings(supabase, body) });
+      } catch (err) {
+        return json(500, { error: /app_settings/.test(err.message) ? "Run supabase/auto_stop.sql first." : err.message });
+      }
+    }
 
     // ---- write: recompute daily_totals.total_spend for one past date from
     // TikTok's own historical report, across every scoped advertiser. Manual
@@ -554,6 +574,7 @@ exports.handler = async function (event) {
       });
       const overlaid = await applyAppealOverlayByCampaignId(supabase, r.campaign.campaign_id, detail);
       await persistCampaignStatus(supabase, r.campaign.campaign_id, overlaid);
+      if (op === "ENABLE") await rebaseAutoStop(supabase, r.campaign.campaign_id);
       const appealInfo = await fetchAppealInfo(supabase, r.campaign.campaign_id);
       return json(200, {
         ok: true,
@@ -761,6 +782,27 @@ exports.handler = async function (event) {
 
 // Accepts either the new `campaign_ids` (array) or the legacy single
 // `campaign_id` param, returns a deduped array of string ids either way.
+// Turning a campaign back on after auto-stop paused it = "let it run": its
+// profit at that moment becomes the new baseline, so it isn't paused again
+// until it loses another $threshold from there. Best-effort (no-op before
+// the auto_stop.sql migration).
+async function rebaseAutoStop(supabase, campaignId) {
+  try {
+    const { data } = await supabase
+      .from("tiktok_campaigns")
+      .select("auto_stopped_at, lifetime_profit, auto_stop_baseline")
+      .eq("campaign_id", String(campaignId))
+      .maybeSingle();
+    if (!data || !data.auto_stopped_at) return;
+    await supabase
+      .from("tiktok_campaigns")
+      .update({ auto_stop_baseline: Number(data.lifetime_profit) || 0, auto_stopped_at: null, auto_stop_reason: null })
+      .eq("campaign_id", String(campaignId));
+  } catch (_) {
+    /* best-effort */
+  }
+}
+
 function normalizeCampaignIds(campaignIds, campaignId) {
   const raw = Array.isArray(campaignIds) ? campaignIds : campaignId != null ? [campaignId] : [];
   return [...new Set(raw.map((v) => String(v || "").trim()).filter(Boolean))];
@@ -1276,18 +1318,6 @@ async function campaignMetricsForScopedAdvertisers(supabase) {
   // still running the next day starts that day's $10/$50 ladder over, on top
   // of whatever budget it already earned (never rolled back) — see
   // _shared/auto-budget-bump.js.
-  // Testing/Scale engine (shadow mode): fold each stale campaign's final
-  // pre-rollover spend/payout/conversions into its lifecycle accumulators
-  // BEFORE the reset below zeroes today_spend — otherwise a test that's
-  // still running when the day rolls over would silently lose that day's
-  // contribution to its cumulative verdict. Best-effort; no-ops if the
-  // testing_scale_lifecycle.sql migration hasn't run yet.
-  try {
-    await foldStaleLifecycleAccumBeforeReset(supabase, date);
-  } catch (_) {
-    /* best-effort */
-  }
-
   try {
     const { error: resetErr } = await supabase
       .from("tiktok_campaigns")
@@ -1327,13 +1357,13 @@ async function campaignMetricsForScopedAdvertisers(supabase) {
   // as the running state for the auto budget-bump feature below.
   //
   // IMPORTANT: this must never come back empty just because an optional
-  // migration (auto_budget_bump.sql, testing_scale_lifecycle.sql, ...) hasn't
+  // migration (auto_budget_bump.sql, auto_stop.sql, ...) hasn't
   // run — knownById gates EVERY row of the persist upsert below
   // (`if (!k) continue`), so an empty map here means today_spend/today_clicks/
   // ...  silently stop being written at all, with no error surfaced anywhere.
   // select("*") instead of an explicit column list so a not-yet-migrated
-  // column (e.g. lifecycle_state) is just silently absent from each row
-  // rather than erroring the whole select — the testing-scale-engine and
+  // column (e.g. auto_stop_baseline) is just silently absent from each row
+  // rather than erroring the whole select — the auto-stop and
   // auto-budget-bump modules both already default missing fields inline
   // (`|| "testing"`, `|| 0`, etc.), same as resolveTrackedCampaign() does
   // elsewhere in this file.
@@ -1372,16 +1402,18 @@ async function campaignMetricsForScopedAdvertisers(supabase) {
     /* no stray table — nothing to exclude */
   }
 
-  // Testing/Scale engine (shadow mode): one account-wide Glitchy/Mabac fetch
-  // for the whole cycle, reused for every advertiser below — never refetched
-  // per advertiser. Best-effort: a failure here just means no verdicts get
-  // computed this cycle, never blocks metrics/spend persistence.
+  // Auto-stop: one account-wide Glitchy/Mabac fetch for the whole cycle,
+  // reused for every advertiser below — never refetched per advertiser.
+  // Best-effort: a failure here just means nothing gets auto-stopped this
+  // cycle, never blocks metrics/spend persistence.
   const cycleNowIso = new Date().toISOString();
+  const autoStopSettings = await readAutoStopSettings(supabase);
+  const autoStopCache = { revenue: {} }; // lifetime revenue by start date, shared across advertisers
   let earningsToday = { glitchyBySource: {}, mabacBySub1: {}, errors: {} };
   try {
     earningsToday = await fetchEarningsToday(date);
   } catch (err) {
-    console.error(`[testing-scale] earnings fetch failed: ${err.message}`);
+    console.error(`[auto-stop] earnings fetch failed: ${err.message}`);
   }
 
   // Engagement FOUNDATION: on this ~60s tick, flip any campaign currently stored
@@ -1400,8 +1432,8 @@ async function campaignMetricsForScopedAdvertisers(supabase) {
   const okAdvertiserIds = [];
   const budgetBumps = {}; // campaign_id -> { budget, auto_budget_baseline, auto_budget_bumps }
   const trueSpendByHour = {}; // "<hour>" -> spend, summed across every advertiser this cycle (Live Performance graph)
-  const lifecycleByCampaignId = {}; // campaign_id -> row of lifecycle_* fields to fold into the metrics upsert (testing-scale-engine, shadow mode)
-  const lifecycleEvents = []; // rows to insert into testing_scale_events — only campaigns whose lifecycle_state actually changed this cycle
+  const autoStopByCampaignId = {}; // campaign_id -> lifetime_profit / pause fields to fold into the metrics upsert
+  const autoStopEvents = []; // rows to insert into testing_scale_events — one per campaign auto-stopped this cycle
 
   // Stay comfortably inside the function time limit even with many advertisers.
   // Netlify's synchronous functions cap out around 10s, but this same code also
@@ -1484,26 +1516,29 @@ async function campaignMetricsForScopedAdvertisers(supabase) {
             console.error(`[auto-budget] adv=${advId} failed: ${err.message}`);
           }
 
-          // Testing/Scale engine (shadow mode): reuses the SAME spendByCampaignId
-          // just built above — no extra TikTok call. Never calls
-          // setCampaignStatus/setAdgroupStatus/campaign_update — verdicts are
-          // logged only. Best-effort: a failure here never blocks metrics for
-          // the rest of this advertiser.
+          // Auto-stop: pauses campaigns whose profit since launch fell to
+          // -$threshold. Reuses this SAME connected client + today's report;
+          // only campaigns losing money today cost an extra lifetime lookup.
+          // Best-effort: a failure here never blocks metrics for the rest of
+          // this advertiser.
           try {
-            const spendByCampaignId = {};
-            for (const [cid, m] of Object.entries(byId)) spendByCampaignId[cid] = m.spend;
-            const { rows: lcRows, events: lcEvents } = applyLifecycleDecisions({
-              spendByCampaignId,
+            const { rows: asRows, stopped } = await applyAutoStop({
+              client,
+              advertiserId: advId,
+              byId,
               knownById,
               whIds,
               strayIds,
               earnings: earningsToday,
+              today: date,
+              settings: autoStopSettings,
+              cache: autoStopCache,
               nowIso: cycleNowIso,
             });
-            for (const r of lcRows) lifecycleByCampaignId[r.campaign_id] = r;
-            lifecycleEvents.push(...lcEvents);
+            for (const r of asRows) autoStopByCampaignId[r.campaign_id] = r;
+            autoStopEvents.push(...stopped);
           } catch (err) {
-            console.error(`[testing-scale] adv=${advId} failed: ${err.message}`);
+            console.error(`[auto-stop] adv=${advId} failed: ${err.message}`);
           }
         } catch (err) {
           errors[`adv:${advId}`] = err.message;
@@ -1525,7 +1560,7 @@ async function campaignMetricsForScopedAdvertisers(supabase) {
     const k = knownById.get(cid);
     if (!k) continue;
     const bump = budgetBumps[cid];
-    const lc = lifecycleByCampaignId[cid];
+    const as = autoStopByCampaignId[cid];
     rows.push({
       campaign_id: cid,
       connection_id: k.connection_id,
@@ -1536,18 +1571,7 @@ async function campaignMetricsForScopedAdvertisers(supabase) {
       today_impressions: m.impressions,
       today_clicks: m.clicks,
       ...(bump ? { budget: bump.budget, auto_budget_baseline: bump.auto_budget_baseline, auto_budget_bumps: bump.auto_budget_bumps } : {}),
-      ...(lc
-        ? {
-            lifecycle_state: lc.lifecycle_state,
-            lifecycle_state_since: lc.lifecycle_state_since,
-            lifecycle_spend_accum: lc.lifecycle_spend_accum,
-            lifecycle_payout_accum: lc.lifecycle_payout_accum,
-            lifecycle_conversions_accum: lc.lifecycle_conversions_accum,
-            lifecycle_last_seen_today_spend: lc.lifecycle_last_seen_today_spend,
-            lifecycle_last_seen_today_payout: lc.lifecycle_last_seen_today_payout,
-            lifecycle_last_seen_today_conversions: lc.lifecycle_last_seen_today_conversions,
-          }
-        : {}),
+      ...(as ? (({ campaign_id, ...rest }) => rest)(as) : {}),
       today_conversions: m.conversions,
       today_cpm: m.cpm,
       today_cpa: m.cpa,
@@ -1556,7 +1580,7 @@ async function campaignMetricsForScopedAdvertisers(supabase) {
   }
   if (rows.length) {
     const { error: upErr } = await supabase.from("tiktok_campaigns").upsert(rows, { onConflict: "campaign_id" });
-    if (upErr && !/today_(date|spend|impressions|clicks|conversions|cpm|cpa)|metrics_updated_at|auto_budget_(bumps|baseline)|lifecycle_/.test(upErr.message || "")) {
+    if (upErr && !/today_(date|spend|impressions|clicks|conversions|cpm|cpa)|metrics_updated_at|auto_budget_(bumps|baseline)|lifetime_|auto_stop/.test(upErr.message || "")) {
       // A real write error (not "column missing" — that just means the migration
       // hasn't been run yet, which only affects daily_totals, not the live table).
       errors.persist = upErr.message;
@@ -1564,14 +1588,46 @@ async function campaignMetricsForScopedAdvertisers(supabase) {
     }
   }
 
-  // Testing/Scale engine audit trail — only inserted for campaigns whose
-  // lifecycle_state actually changed this cycle. Best-effort: swallow
-  // "table doesn't exist yet" the same way missing columns are swallowed above.
-  if (lifecycleEvents.length) {
+  // Creative Library: today's spend + affiliate revenue per campaign, one row
+  // per NY day (angle performance sums these). Revenue is only written when
+  // that network's fetch succeeded this cycle, so a Glitchy/Mabac hiccup never
+  // overwrites a good number with 0 (upsert leaves omitted columns alone).
+  try {
+    const dailyWithRevenue = [];
+    const dailySpendOnly = [];
+    for (const [cid, m] of Object.entries(metrics)) {
+      const k = knownById.get(cid);
+      if (!k || whIds.has(cid)) continue;
+      const mabac = String(k.affiliate_network || "GLITCHY").toUpperCase() === "MABAC";
+      const aff = mabac ? earningsToday.mabacBySub1[k.campaign_name] : earningsToday.glitchyBySource[k.campaign_name];
+      const base = { campaign_id: cid, date, spend: Number(m.spend) || 0, updated_at: now };
+      if (earningsToday.errors[mabac ? "mabac" : "glitchy"]) dailySpendOnly.push(base);
+      else
+        dailyWithRevenue.push({
+          ...base,
+          revenue: Number(mabac ? aff?.revenue : aff?.payout) || 0,
+          conversions: Number(aff?.conversions) || 0,
+        });
+    }
+    for (const batch of [dailyWithRevenue, dailySpendOnly]) {
+      if (!batch.length) continue;
+      const { error: dErr } = await supabase.from("campaign_daily").upsert(batch, { onConflict: "campaign_id,date" });
+      if (dErr && !/does not exist|schema cache|could not find/i.test(dErr.message || "")) {
+        console.error(`[creative-library] campaign_daily upsert failed: ${dErr.message}`);
+      }
+    }
+  } catch (err) {
+    console.error(`[creative-library] campaign_daily failed: ${err.message}`);
+  }
+
+  // Auto-stop audit trail — one row per campaign paused this cycle.
+  // Best-effort: swallow "table doesn't exist yet" the same way missing
+  // columns are swallowed above.
+  if (autoStopEvents.length) {
     try {
-      const { error: evErr } = await supabase.from("testing_scale_events").insert(lifecycleEvents);
+      const { error: evErr } = await supabase.from("testing_scale_events").insert(autoStopEvents);
       if (evErr && !/does not exist|schema cache|could not find/i.test(evErr.message || "")) {
-        console.error(`[testing-scale] events insert failed: ${evErr.message}`);
+        console.error(`[auto-stop] events insert failed: ${evErr.message}`);
       }
     } catch (_) {
       /* table not migrated yet */
@@ -1624,7 +1680,8 @@ async function campaignMetricsForScopedAdvertisers(supabase) {
     spendToday = { date, currentHour: hour, cumulative, byHour: byHourFallback };
   }
 
-  return json(200, { ok: true, date, metrics, okAdvertiserIds, errors, spendToday, budgetBumps });
+  const autoStopped = autoStopEvents.map((e) => ({ campaign_id: e.campaign_id, campaign_name: e.campaign_name, reason: e.reason }));
+  return json(200, { ok: true, date, metrics, okAdvertiserIds, errors, spendToday, budgetBumps, autoStopped });
 }
 
 // Current hour (0-23) in America/New_York — the graph's fixed axis / boundary.

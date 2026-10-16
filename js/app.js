@@ -8,6 +8,7 @@ import {
   postTiktokAction,
   fetchTiktokCampaigns,
   fetchTiktokMetrics,
+  autoStopSettings,
   syncTiktokCampaigns,
   fetchCampaignAdGroups,
   setCampaignStatus,
@@ -52,7 +53,8 @@ import {
 } from "./api.js";
 import { initTheme } from "./theme.js";
 import { createMainChart, updateMainChart } from "./charts.js";
-import { initSparkMaker } from "./spark-maker.js";
+import { initSparkMaker, openSparkMakerWithAngles } from "./spark-maker.js";
+import { initCreativeLibrary, listLibraryAngles, tagCampaignsWithAngle } from "./creative-library.js";
 
 // ---------------------------------------------------------------------------
 // Fallback dataset — only ever used on a brand-new browser with no cache AND
@@ -344,6 +346,24 @@ function applyTiktokMetrics(data) {
   // Live Performance Spend series only — keep the last snapshot if this cycle
   // didn't return one (e.g. the spend-snapshot table isn't migrated yet).
   if (data.spendToday) state.spendToday = data.spendToday;
+  // Auto-stop paused something this cycle — reflect it now instead of on the
+  // next campaign sync, and say so.
+  if (Array.isArray(data.autoStopped) && data.autoStopped.length) {
+    const now = new Date().toISOString();
+    for (const a of data.autoStopped) {
+      const tk = state.tiktokCampaigns.find((c) => String(c.campaign_id) === String(a.campaign_id));
+      if (!tk) continue;
+      Object.assign(tk, {
+        campaign_operation_status: "DISABLE",
+        effective_status: "Paused",
+        effective_tone: "neutral",
+        status_detail: a.reason,
+        auto_stopped_at: now,
+        auto_stop_reason: a.reason,
+      });
+    }
+    setStatus(`Auto-stop paused ${data.autoStopped.map((a) => a.campaign_name || a.campaign_id).join(", ")} (fell to -$10 since launch).`);
+  }
   rebuildSources();
 }
 
@@ -403,6 +423,8 @@ function wireEvents() {
   wireTrackerEvents();
 
   initSparkMaker({ onOpen: closeToolsDrawer });
+  initCreativeLibrary({ onOpen: closeToolsDrawer, askPassword: askTiktokPassword, openSparkMaker: openSparkMakerWithAngles });
+  wireAutoStopToggle();
 
   document.getElementById("detailBcSelect").addEventListener("change", (e) => {
     state.detailBcFilter = e.target.value;
@@ -725,7 +747,13 @@ function rebuildSources(opts = {}) {
       budget,
       tiktokPostUrl: tk ? tk.tiktok_post_url || null : null,
       engagementStatus: tk ? tk.engagement_status || "PENDING" : null,
-      lifecycleState: tk ? tk.lifecycle_state || "testing" : null,
+      autoStop: tk
+        ? {
+            stopped: !!tk.auto_stopped_at,
+            reason: tk.auto_stop_reason || null,
+            profit: tk.lifetime_profit == null ? null : Number(tk.lifetime_profit),
+          }
+        : null,
     };
   });
 
@@ -835,7 +863,7 @@ function renderTable(newConversionSources) {
       <td class="select-cell">${selectCell(s)}</td>
       <td class="toggle-cell">${campaignToggle(s)}</td>
       <td>${statusBadge(s.status)}</td>
-      <td>${lifecycleBadge(s)}</td>
+      <td>${autoStopBadge(s)}</td>
       <td class="source-name"><span class="expand-caret">▸</span>${crown}${escapeHtml(s.source)}</td>
       <td class="num">${money(s.spend)}</td>
       <td class="num">${money(s.cpm)}</td>
@@ -3531,6 +3559,7 @@ function syncCcRunNext5() {
 
 function renderCcReview() {
   console.log("[cc] render review");
+  fillCcAngleSelect();
   // Rendering Review is display-only — it NEVER sets/changes creating state.
   // It only syncs the button/progress to whatever ccState.run.submitting
   // already is, so a re-render (Back/Next, resume, revisiting this step)
@@ -3648,6 +3677,7 @@ async function submitCampaignCreator() {
     }
     console.log("[cc] create request finished");
     renderCcResults(allResults);
+    tagCcCampaignsWithAngle(allResults);
     runGoStepShow(7);
     ccSteps("ccRunSteps", 6);
     ccState.run.step = 7;
@@ -3663,6 +3693,35 @@ async function submitCampaignCreator() {
     // shown above) so the UI can never stay stuck on "Creating…".
     r.submitting = false;
     ccSyncCreateUi();
+  }
+}
+
+// Review step's optional Angle picker (Creative Library). Filled each time
+// Review is shown; best-effort — the library being unavailable just leaves it
+// at "no angle".
+async function fillCcAngleSelect() {
+  const sel = document.getElementById("ccRunAngle");
+  if (!sel) return;
+  const keep = sel.value;
+  try {
+    const angles = await listLibraryAngles();
+    sel.innerHTML =
+      `<option value="">— no angle —</option>` +
+      angles.map((a) => `<option value="${a.id}">${escapeHtml(a.text.length > 80 ? a.text.slice(0, 80) + "…" : a.text)}</option>`).join("");
+    sel.value = angles.some((a) => a.id === keep) ? keep : "";
+  } catch (_) {
+    /* library not set up yet */
+  }
+}
+
+async function tagCcCampaignsWithAngle(results) {
+  const angleId = (document.getElementById("ccRunAngle") || {}).value;
+  const ids = results.filter((r) => r.status === "Created" && r.campaign_id).map((r) => String(r.campaign_id));
+  if (!angleId || !ids.length) return;
+  try {
+    await tagCampaignsWithAngle(angleId, ids);
+  } catch (err) {
+    console.warn("[cc] angle tagging failed:", err.message);
   }
 }
 
@@ -4309,17 +4368,19 @@ function statusBadge(status) {
   return `<span class="status-badge ${tone}" title="${escapeHtml(tip)}">${escapeHtml(status.label)}</span>`;
 }
 
-// Testing/Scale engine (shadow mode) — informational only, no automatic
-// action is taken on any of these verdicts yet.
-const LIFECYCLE_BADGE = {
-  testing: ["neutral", "Testing"],
-  scaling: ["good", "Scaling"],
-  killed: ["bad", "Killed"],
-};
-function lifecycleBadge(s) {
-  if (!s.hasTiktok || !s.lifecycleState) return `<span class="status-badge none">—</span>`;
-  const [tone, label] = LIFECYCLE_BADGE[s.lifecycleState] || ["neutral", s.lifecycleState];
-  return `<span class="status-badge ${tone}" title="Shadow-mode verdict — informational only, no automatic action taken">${escapeHtml(label)}</span>`;
+// Auto-stop column: "Stopped" once auto-stop paused it; otherwise the last
+// profit-since-launch it computed (only checked while a campaign is losing
+// money today, so most healthy campaigns just show "—").
+function autoStopBadge(s) {
+  const a = s.autoStop;
+  if (!s.hasTiktok || !a) return `<span class="status-badge none">—</span>`;
+  if (a.stopped) {
+    return `<span class="status-badge bad" title="${escapeHtml(a.reason || "Paused by auto-stop")} — turn it back on to give it another $10">Stopped</span>`;
+  }
+  if (a.profit == null) return `<span class="status-badge none" title="Profitable today — not checked">—</span>`;
+  const tone = a.profit >= 0 ? "good" : "warn";
+  const sign = a.profit < 0 ? "-" : "+";
+  return `<span class="status-badge ${tone}" title="Profit since launch (last auto-stop check)">${sign}$${Math.abs(a.profit).toFixed(2)}</span>`;
 }
 
 function escapeHtml(str) {
@@ -4411,6 +4472,37 @@ function renderChart(forceRecreate) {
 }
 
 // ============================== TOOLS DRAWER ==============================
+
+// Auto-stop on/off (server-side setting — applies even with the dashboard closed).
+function renderAutoStopState(settings, err) {
+  const el = document.getElementById("toolsAutoStopState");
+  if (!el) return;
+  if (err) {
+    el.textContent = "setup needed";
+    el.className = "tools-item-state warn";
+    el.title = err;
+    return;
+  }
+  el.textContent = settings.enabled ? `ON · -$${settings.threshold}` : "OFF";
+  el.className = `tools-item-state ${settings.enabled ? "on" : ""}`;
+  el.title = "";
+}
+
+function wireAutoStopToggle() {
+  let current = null;
+  autoStopSettings()
+    .then((r) => renderAutoStopState((current = r.settings)))
+    .catch((e) => renderAutoStopState(null, e.message));
+  document.getElementById("toolsAutoStopBtn").addEventListener("click", async () => {
+    if (!current) return;
+    try {
+      const r = await autoStopSettings({ enabled: !current.enabled });
+      renderAutoStopState((current = r.settings));
+    } catch (e) {
+      renderAutoStopState(null, e.message);
+    }
+  });
+}
 
 function openToolsDrawer() {
   document.getElementById("toolsDrawer").classList.add("open");
