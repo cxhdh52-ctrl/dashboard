@@ -204,6 +204,10 @@ function sparkCandidates(base) {
 }
 
 const SPARK_FORMAT_ERR = /incorrect|invalid|post code|auth[_ ]?code|not\s+valid/i;
+// TikTok's MCP is enabling tt_video_authorize_apply per ad account ("This tool
+// is currently being rolled out and will be available for this advertiser ID
+// soon"). Until it reaches an account, codes can only be applied in Ads Manager.
+const SPARK_ROLLOUT_ERR = /being rolled out|available for this advertiser|estimated date of availability/i;
 
 // A structure-only description of an MCP response: key names + value *types*
 // (and, for strings, only their length) — NEVER any value, so the Spark
@@ -272,11 +276,36 @@ async function resolveSparkCode(client, advertiserId, rawCode) {
       break;
     } catch (err) {
       lastErr = err;
+      if (SPARK_ROLLOUT_ERR.test(err.message || "")) break; // -> already-authorized fallback below
       // A non-format error (network, permissions, quota, duet) -> stop, surface it.
       if (!SPARK_FORMAT_ERR.test(err.message || "")) throw err;
       console.warn(`[wh-warmup] spark candidate #${i + 1} rejected: ${err.message}`);
     }
   }
+  // Apply isn't available on this ad account yet — the post can still be used
+  // if the code was already applied to it in Ads Manager: info_get only reads.
+  let info = null;
+  if (!workingCode && SPARK_ROLLOUT_ERR.test(lastErr?.message || "")) {
+    console.warn(`[wh-warmup] tt_video_authorize_apply not rolled out for adv=${advertiserId}; trying already-authorized lookup`);
+    for (const c of candidates) {
+      try {
+        info = await mcpCall(client, "tt_video_info_get", { advertiser_id: String(advertiserId), auth_code: c });
+        workingCode = c;
+        break;
+      } catch (err) {
+        console.warn(`[wh-warmup] tt_video_info_get (no apply) failed: ${err.message}`);
+      }
+    }
+    if (!workingCode) {
+      throw new Error(
+        `TikTok hasn't enabled Spark-code authorization through the API for ad account ${advertiserId} yet ` +
+          `(TikTok says: available around December). Fix: open this ad account in TikTok Ads Manager → ` +
+          `Tools → Creatives → Spark Ads posts → Apply for authorization, paste the code there once, then retry here. ` +
+          `Or link the TikTok account to the Business Center and use "Pick from linked accounts" in the Campaign Creator instead of using a code.`
+      );
+    }
+  }
+
   if (!workingCode) {
     throw new Error(
       `Spark authorization failed for every code format tried [${sparkFingerprint(base)}]. ` +
@@ -285,10 +314,12 @@ async function resolveSparkCode(client, advertiserId, rawCode) {
   }
 
   // 2. Read the authorized post -> item_id (same code form that just worked).
-  const info = await mcpCall(client, "tt_video_info_get", {
-    advertiser_id: String(advertiserId),
-    auth_code: workingCode,
-  });
+  if (!info) {
+    info = await mcpCall(client, "tt_video_info_get", {
+      advertiser_id: String(advertiserId),
+      auth_code: workingCode,
+    });
+  }
   console.log(`[wh-warmup] tt_video_info_get shape: ${describeShape(info)}`);
 
   // The MCP server may nest this under video_info / video_infos[] / data — take
