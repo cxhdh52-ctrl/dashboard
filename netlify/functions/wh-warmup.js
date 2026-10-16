@@ -260,6 +260,7 @@ async function createBatch(supabase, body) {
         const r = await createWarmupForAdvertiser({
           client,
           advertiserId: advId,
+          bcId: adv.bc_id || conn.bc_id || null,
           currency: adv.currency,
           targetCountry,
           locationId,

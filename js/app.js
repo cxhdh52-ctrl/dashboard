@@ -1765,6 +1765,67 @@ function wireWhWarmupEvents() {
   document.getElementById("whSparkInput").addEventListener("input", (e) => {
     whState.spark = e.target.value;
   });
+  document.getElementById("whLinkedBtn").addEventListener("click", openWhLinkedPicker);
+}
+
+// ---- WH: pick ONE post from a TikTok account linked to the BC instead of a
+// Spark code. Fills the Spark box with "linked:<identity_id>:<item_id>[:photo]"
+// (see parseLinkedPost on the server) — needs no tt_video_authorize_apply,
+// which TikTok hasn't rolled out to every ad account yet.
+async function openWhLinkedPicker() {
+  const wrap = document.getElementById("whLinkedPicker");
+  const advs = whAdvsForConnection().filter((a) => whState.selected.has(String(a.advertiser_id)));
+  wrap.hidden = false;
+  if (!advs.length) {
+    wrap.innerHTML = `<p class="eng-hint">Select accounts first.</p>`;
+    return;
+  }
+  wrap.innerHTML = `<div class="eng-placeholder busy">Loading linked accounts…</div>`;
+  let bcs;
+  try {
+    ({ bcs } = await fetchLinkedPosts(whState.connectionId, advs.map((a) => String(a.advertiser_id))));
+  } catch (err) {
+    wrap.innerHTML = `<p class="modal-error">${escapeHtml(err.message)}</p>`;
+    return;
+  }
+  const accounts = (bcs || []).flatMap((b) => b.accounts || []);
+  if (!accounts.length) {
+    wrap.innerHTML = `<p class="eng-hint">No TikTok accounts are linked to this Business Center yet. Link one in Business Center → Assets → TikTok accounts.</p>`;
+    return;
+  }
+  const multiBc = (bcs || []).length > 1;
+  const statusLabel = (st) => st.replace("ITEM_STATUS_", "").toLowerCase().replace(/_/g, " ");
+  wrap.innerHTML =
+    `<p class="eng-hint">Pick one post — it's used for every selected account.${
+      multiBc ? " Your accounts span several Business Centers: the post only works on accounts in the BC its TikTok account is linked to." : ""
+    }</p>` +
+    accounts
+      .map((a, ai) => {
+        const posts = (a.posts || [])
+          .map(
+            (p, pi) => `<label class="cc-linked-post" data-a="${ai}" data-p="${pi}">
+              <input type="radio" name="whLinkedPick" />
+              ${p.poster_url ? `<img src="${escapeHtml(p.poster_url)}" alt="" loading="lazy" />` : `<div class="ph"></div>`}
+              <span class="cap">${p.is_carousel ? "🖼 Slideshow · " : ""}${escapeHtml(p.text || p.item_id)}</span>
+              ${p.status && p.status !== "ITEM_STATUS_PUBLIC" ? `<span class="flag">${escapeHtml(statusLabel(p.status))}</span>` : ""}
+            </label>`
+          )
+          .join("");
+        return `<div class="cc-linked-acct">${escapeHtml(a.name || a.username || a.identity_id)}${a.username ? ` · @${escapeHtml(a.username)}` : ""}</div>
+          ${a.error ? `<p class="modal-error">${escapeHtml(a.error)}</p>` : ""}
+          <div class="cc-linked-grid">${posts || `<p class="eng-hint">No posts yet.</p>`}</div>`;
+      })
+      .join("");
+  wrap.querySelectorAll(".cc-linked-post input").forEach((r) => {
+    r.addEventListener("change", () => {
+      const el = r.closest(".cc-linked-post");
+      const a = accounts[Number(el.dataset.a)];
+      const p = a.posts[Number(el.dataset.p)];
+      whState.spark = `linked:${a.identity_id}:${p.item_id}${p.is_carousel ? ":photo" : ""}`;
+      document.getElementById("whSparkInput").value = whState.spark;
+      wrap.querySelectorAll(".cc-linked-post").forEach((x) => x.classList.toggle("picked", x === el));
+    });
+  });
 }
 
 function hideCountrySuggest() {
@@ -1920,6 +1981,7 @@ function whResetDraft() {
   document.getElementById("whCountryInput").value = "";
   document.getElementById("whCountryOk").textContent = "";
   document.getElementById("whSparkInput").value = "";
+  document.getElementById("whLinkedPicker").hidden = true;
   document.getElementById("whAdvSearch").value = "";
 }
 

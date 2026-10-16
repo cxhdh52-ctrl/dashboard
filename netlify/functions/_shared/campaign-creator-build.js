@@ -11,7 +11,7 @@
 // only. Video sharing + downloading disabled. No interests/behaviours.
 
 const { mcpCall, deleteCampaign } = require("./tiktok-mcp");
-const { resolveSparkCode } = require("./wh-warmup");
+const { resolveSparkCode, parseLinkedPost } = require("./wh-warmup");
 
 // ---------------------------------------------------------------------------
 // Enums / constants — TikTok's real values
@@ -615,15 +615,6 @@ async function listBcIdentities(client, advertiserId, bcId) {
       username: x.username || null,
     }))
     .filter((x) => x.identity_id);
-}
-
-// A post from a TikTok account linked to the Business Center, used in place of
-// a Spark code: "linked:<identity_id>:<item_id>" (":photo" suffix for a photo
-// slideshow). BC-linked accounts need no authorization code — the ad pulls the
-// post through the BC_AUTH_TT identity.
-function parseLinkedPost(code) {
-  const m = /^linked:([^:\s]+):(\d{6,25})(:photo)?$/.exec(String(code || "").trim());
-  return m ? { identity_id: m[1], item_id: m[2], post_type: m[3] ? "CAROUSEL" : "VIDEO" } : null;
 }
 
 // First http(s) URL anywhere inside a value (carousel_info's image shape varies).

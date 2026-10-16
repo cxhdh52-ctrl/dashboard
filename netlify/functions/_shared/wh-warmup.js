@@ -301,7 +301,7 @@ async function resolveSparkCode(client, advertiserId, rawCode) {
         `TikTok hasn't enabled Spark-code authorization through the API for ad account ${advertiserId} yet ` +
           `(TikTok says: available around December). Fix: open this ad account in TikTok Ads Manager → ` +
           `Tools → Creatives → Spark Ads posts → Apply for authorization, paste the code there once, then retry here. ` +
-          `Or link the TikTok account to the Business Center and use "Pick from linked accounts" in the Campaign Creator instead of using a code.`
+          `Or link the TikTok account to the Business Center and use "pick a post from linked accounts" (WH / Campaign Creator) instead of using a code.`
       );
     }
   }
@@ -404,7 +404,16 @@ async function resolveSparkCode(client, advertiserId, rawCode) {
 // the error as `.rolledBackCampaignId`.
 // ---------------------------------------------------------------------------
 
-async function createWarmupForAdvertiser({ client, advertiserId, currency, targetCountry, locationId, sparkCode, campaignName }) {
+// A post from a TikTok account linked to the Business Center, used in place of
+// a Spark code: "linked:<identity_id>:<item_id>" (":photo" suffix for a photo
+// slideshow). BC-linked accounts need no authorization code — the ad pulls the
+// post through the BC_AUTH_TT identity, so tt_video_authorize_apply is never called.
+function parseLinkedPost(code) {
+  const m = /^linked:([^:\s]+):(\d{6,25})(:photo)?$/.exec(String(code || "").trim());
+  return m ? { identity_id: m[1], item_id: m[2], post_type: m[3] ? "CAROUSEL" : "VIDEO" } : null;
+}
+
+async function createWarmupForAdvertiser({ client, advertiserId, bcId, currency, targetCountry, locationId, sparkCode, campaignName }) {
   const names = whNames();
   if (campaignName) names.campaign = campaignName; // wh1, wh2, … — see wh-warmup.js createBatch
   const budget = whDailyBudget(currency);
@@ -415,7 +424,9 @@ async function createWarmupForAdvertiser({ client, advertiserId, currency, targe
   const loc = locationId
     ? { location_id: String(locationId), name: String(targetCountry || locationId) }
     : await resolveCountryLocationId(client, advertiserId, targetCountry);
-  const spark = await resolveSparkCode(client, advertiserId, sparkCode);
+  const linked = parseLinkedPost(sparkCode);
+  if (linked && !bcId) throw new Error("A linked-account post needs the ad account's Business Center id.");
+  const spark = linked || (await resolveSparkCode(client, advertiserId, sparkCode));
 
   let campaignId = null;
   try {
@@ -480,8 +491,9 @@ async function createWarmupForAdvertiser({ client, advertiserId, currency, targe
         {
           ad_name: names.ad,
           ad_format: adFormat,
-          identity_type: "AUTH_CODE",
+          identity_type: linked ? "BC_AUTH_TT" : "AUTH_CODE",
           identity_id: spark.identity_id,
+          ...(linked ? { identity_authorized_bc_id: String(bcId) } : {}),
           tiktok_item_id: spark.item_id,
           call_to_action: "LEARN_MORE",
           landing_page_url: names.url,
@@ -679,6 +691,7 @@ module.exports = {
   listAllCountryRegions,
   resolveCountryLocationId,
   resolveSparkCode,
+  parseLinkedPost,
   createWarmupForAdvertiser,
   cleanupOneWarmup,
   CLEANUP_ATTEMPT_CAP,

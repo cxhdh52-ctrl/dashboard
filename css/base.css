@@ -1218,3 +1218,4 @@ select.tracker-type-select.tracker-type-slides {
   .cl-angle-actions { justify-content: flex-start; width: 100%; }
   .cl-summary { margin-left: 0; }
 }
+#whLinkedBtn { margin-top: 8px; align-self: flex-start; }
