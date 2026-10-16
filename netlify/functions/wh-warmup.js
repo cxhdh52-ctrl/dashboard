@@ -80,6 +80,8 @@ exports.handler = async function (event) {
     if (body.action === "list") return listWarmups(supabase, body.connection_id || null);
     if (body.action === "countries") return countriesFor(supabase, body);
     if (body.action === "template_countries") return templateCountries(supabase);
+    if (body.action === "us_status") return usStatus(supabase);
+    if (body.action === "us_check") return usCheck(supabase, body);
 
     return json(400, { error: `Unknown action: ${body.action}` });
   } catch (err) {
@@ -107,6 +109,62 @@ async function countriesFor(supabase, body) {
   } catch (err) {
     return json(502, { error: "Couldn't load TikTok countries", details: err.message });
   }
+}
+
+// ---------------------------------------------------------------------------
+// US availability per ad account. TikTok unlocks the US per AD ACCOUNT (an EU
+// BC account often only gets it after warming up — and sometimes not even
+// then), so the account pickers show it. One tool_region_get per account;
+// results are cached in app_settings (key "us_availability"):
+//   { [advertiser_id]: { us: true|false, checked_at } }
+// ---------------------------------------------------------------------------
+
+const US_KEY = "us_availability";
+const isUs = (c) => /^US$/i.test(c.code || "") || /^united states( of america)?$/i.test(c.name || "");
+
+async function readUsMap(supabase) {
+  const { data } = await supabase.from("app_settings").select("value").eq("key", US_KEY).maybeSingle();
+  return (data && data.value) || {};
+}
+
+async function usStatus(supabase) {
+  try {
+    return json(200, { ok: true, accounts: await readUsMap(supabase) });
+  } catch (err) {
+    return json(200, { ok: true, accounts: {}, warning: err.message });
+  }
+}
+
+// { connection_id, advertiser_ids: [...] } — the dashboard sends small chunks
+// (one at a time) so each request stays well inside the function deadline.
+async function usCheck(supabase, body) {
+  const connectionId = body.connection_id;
+  const ids = [...new Set((body.advertiser_ids || []).map(String).filter(Boolean))].slice(0, 12);
+  if (!connectionId || !ids.length) return json(400, { error: "connection_id and advertiser_ids are required" });
+  const { data: conn } = await supabase.from("tiktok_connections").select("*").eq("id", connectionId).maybeSingle();
+  if (!conn) return json(404, { error: "Connection not found." });
+
+  const found = {};
+  const errors = {};
+  const deadline = Date.now() + 40000;
+  await withClient(supabase, conn, async (client) => {
+    for (const advId of ids) {
+      if (Date.now() > deadline) break;
+      try {
+        const list = await listCountryRegions(client, advId);
+        if (list.length) found[advId] = { us: list.some(isUs), checked_at: new Date().toISOString() };
+      } catch (err) {
+        errors[advId] = err.message;
+      }
+    }
+  });
+
+  // Read-modify-write: the dashboard sends its chunks one after another.
+  const map = { ...(await readUsMap(supabase)), ...found };
+  const { error } = await supabase
+    .from("app_settings")
+    .upsert({ key: US_KEY, value: map, updated_at: new Date().toISOString() }, { onConflict: "key" });
+  return json(200, { ok: true, accounts: found, errors, ...(error ? { warning: error.message } : {}) });
 }
 
 // In-process cache — sweeping every connection's advertisers is slow (one
@@ -512,5 +570,28 @@ async function listWarmups(supabase, connectionId) {
     }
   }
 
-  return json(200, { ok: true, campaigns: rows });
+  // Accounts whose WH reached Active at least once = warmed up (kept after the
+  // campaign itself is auto-deleted).
+  let warmed = [];
+  try {
+    let wq = supabase
+      .from("wh_warmup_campaigns")
+      .select("advertiser_id, became_active_at")
+      .not("became_active_at", "is", null)
+      .order("became_active_at", { ascending: false })
+      .limit(1000);
+    if (connectionId) wq = wq.eq("connection_id", connectionId);
+    const { data: w } = await wq;
+    const seen = new Set();
+    for (const r of w || []) {
+      const id = String(r.advertiser_id);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      warmed.push({ advertiser_id: id, became_active_at: r.became_active_at });
+    }
+  } catch (_) {
+    warmed = [];
+  }
+
+  return json(200, { ok: true, campaigns: rows, warmed });
 }

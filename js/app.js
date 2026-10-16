@@ -42,6 +42,8 @@ import {
   rememberForm,
   runCampaignCreator,
   fetchLinkedPosts,
+  fetchUsStatus,
+  checkUsAvailability,
   listCampaignCreatorCampaigns,
   runManualDupe,
   trackerList,
@@ -1708,16 +1710,12 @@ function wireWhWarmupEvents() {
     whState.selected.clear();
     renderWhAdvertisers();
     refreshWhWarmingCount(); // the "WHs Warming Up" badge is scoped to this BC too
+    ensureUsChecked(whState.connectionId, whAdvsForConnection());
   });
   // Exactly the Approved accounts with no WH warming up (clears any other picks).
   document.getElementById("whSelectRemaining").addEventListener("change", (e) => {
     whState.selected.clear();
-    if (e.target.checked) {
-      const warming = whWarmingByAdv();
-      whAdvsForConnection()
-        .filter((a) => advIsApproved(a) && !warming.has(String(a.advertiser_id)))
-        .forEach((a) => whState.selected.add(String(a.advertiser_id)));
-    }
+    if (e.target.checked) whRemainingAdvs().forEach((a) => whState.selected.add(String(a.advertiser_id)));
     renderWhAdvertisers();
   });
   document.getElementById("whSelectAll").addEventListener("change", (e) => {
@@ -1919,7 +1917,11 @@ async function loadWhCountries(advertiserId) {
 // Array.prototype.sort is stable, so sorting on rank alone preserves that.
 function whAdvsForConnection() {
   const warming = whWarmingByAdv();
-  const rank = (a) => advApprovedRank(a) * 2 + (warming.has(String(a.advertiser_id)) ? 1 : 0);
+  const warmed = whWarmedByAdv(whState.connectionId);
+  const rank = (a) => {
+    const id = String(a.advertiser_id);
+    return advApprovedRank(a) * 3 + (warming.has(id) ? 2 : warmed.has(id) ? 1 : 0);
+  };
   return tiktokState.advertisers
     .filter((a) => a.connection_id === whState.connectionId)
     .slice()
@@ -1928,13 +1930,134 @@ function whAdvsForConnection() {
 
 // advertiser_id -> number of WH campaigns currently warming up on it (from the
 // "WHs Warming Up" list), so step 1 can show which accounts are still left.
-function whWarmingByAdv() {
+function whWarmingByAdv(connId = whState.connectionId) {
+  // The WH modal's own list is the live one (rows drop out as they're deleted).
+  const list = connId === whState.connectionId ? whWarmingState.campaigns : acctState.wh.get(connId)?.campaigns || [];
   const m = new Map();
-  for (const c of whWarmingState.campaigns || []) {
+  for (const c of list || []) {
+    if (c.became_active_at) continue; // reached Active -> counts as warmed up
     const id = String(c.advertiser_id || "");
     if (id) m.set(id, (m.get(id) || 0) + 1);
   }
   return m;
+}
+
+// ---- Per-account status shared by the WH Warmup and Campaign Creator account
+// lists: "Warming up" / "Warmed up" (from wh_warmup_campaigns) and whether the
+// US is targetable on that ad account (TikTok unlocks it per account — an EU
+// account sometimes still has no US after warming up).
+const US_STALE_MS = 6 * 3600 * 1000;
+const acctState = {
+  wh: new Map(), // connection_id -> { campaigns, warmed: Map(advertiser_id -> became_active_at) }
+  us: {}, // advertiser_id -> { us, checked_at }
+  usLoaded: false,
+  checking: new Set(), // advertiser_ids being re-checked right now
+  rerender: new Set(), // render fns of the lists currently open
+};
+
+function whWarmedByAdv(connId) {
+  return acctState.wh.get(connId)?.warmed || new Map();
+}
+
+function storeWhData(connId, res) {
+  acctState.wh.set(connId, {
+    campaigns: res.campaigns || [],
+    warmed: new Map((res.warmed || []).map((w) => [String(w.advertiser_id), w.became_active_at])),
+  });
+}
+
+async function loadWhData(connId) {
+  if (!connId) return;
+  try {
+    storeWhData(connId, await listWhWarmup(connId));
+    acctRerender();
+  } catch (_) {
+    /* tags just stay off */
+  }
+}
+
+function acctRerender() {
+  for (const fn of acctState.rerender) fn();
+}
+
+// Tags for one account row: warming/warmed + US.
+function acctTagsHtml(connId, id) {
+  const tags = [];
+  const warming = whWarmingByAdv(connId).get(id);
+  const warmedAt = whWarmedByAdv(connId).get(id);
+  if (warming) {
+    tags.push(`<span class="tk-adv-status wh-warming-tag" title="A WH campaign is warming up on this account">Warming up${warming > 1 ? ` ×${warming}` : ""}</span>`);
+  } else if (warmedAt) {
+    tags.push(`<span class="tk-adv-status ok" title="WH reached Active ${escapeHtml(new Date(warmedAt).toLocaleString())}">Warmed up</span>`);
+  }
+  const us = acctState.us[id];
+  if (acctState.checking.has(id)) {
+    tags.push(`<span class="tk-adv-status us-tag" title="Checking US availability…">US …</span>`);
+  } else if (us) {
+    const when = new Date(us.checked_at).toLocaleString();
+    tags.push(
+      us.us
+        ? `<span class="tk-adv-status ok us-tag" title="US is targetable on this ad account (checked ${escapeHtml(when)})">US ✓</span>`
+        : `<span class="tk-adv-status warn us-tag" title="US is NOT targetable on this ad account yet (checked ${escapeHtml(when)})">No US</span>`
+    );
+  }
+  return tags.join("");
+}
+
+// Summary chips for a list: "US ✓ n · No US n" + a recheck button.
+function acctUsSummaryHtml(advs, listKey) {
+  const approved = advs.filter((a) => advIsApproved(a));
+  const yes = approved.filter((a) => acctState.us[String(a.advertiser_id)]?.us === true).length;
+  const no = approved.filter((a) => acctState.us[String(a.advertiser_id)]?.us === false).length;
+  const busy = approved.some((a) => acctState.checking.has(String(a.advertiser_id)));
+  return `<span class="tk-sum-item ok"><strong>${yes}</strong> US ✓</span>
+    <span class="tk-sum-item warn"><strong>${no}</strong> No US</span>
+    <button type="button" class="icon-btn us-recheck" data-us-recheck="${listKey}" ${busy ? "disabled" : ""}>${busy ? "Checking US…" : "Recheck US"}</button>`;
+}
+
+// Loads the cached US map, then re-checks (in small sequential chunks) every
+// Approved account that was never checked or is older than US_STALE_MS — or
+// all of them when `force`.
+async function ensureUsChecked(connId, advs, force = false) {
+  if (!acctState.usLoaded) {
+    try {
+      acctState.us = (await fetchUsStatus()).accounts || {};
+      acctState.usLoaded = true;
+    } catch (_) {
+      /* fall through to a live check */
+    }
+    acctRerender();
+  }
+  const now = Date.now();
+  const ids = advs
+    .filter((a) => advIsApproved(a))
+    .map((a) => String(a.advertiser_id))
+    .filter((id) => !acctState.checking.has(id))
+    .filter((id) => force || !acctState.us[id] || now - new Date(acctState.us[id].checked_at).getTime() > US_STALE_MS);
+  if (!connId || !ids.length) return;
+  ids.forEach((id) => acctState.checking.add(id));
+  acctRerender();
+  for (let i = 0; i < ids.length; i += 6) {
+    const chunk = ids.slice(i, i + 6);
+    try {
+      const res = await checkUsAvailability(connId, chunk);
+      Object.assign(acctState.us, res.accounts || {});
+    } catch (_) {
+      /* leave the old value; next open retries */
+    }
+    chunk.forEach((id) => acctState.checking.delete(id));
+    acctRerender();
+  }
+}
+
+// Approved accounts with no WH warming up and none that ever reached Active.
+function whRemainingAdvs() {
+  const warming = whWarmingByAdv();
+  const warmed = whWarmedByAdv(whState.connectionId);
+  return whAdvsForConnection().filter((a) => {
+    const id = String(a.advertiser_id);
+    return advIsApproved(a) && !warming.has(id) && !warmed.has(id);
+  });
 }
 
 // Reopen: if the user minimized mid-flow, resume exactly where they were —
@@ -1977,6 +2100,8 @@ async function openWhWarmupModal() {
   whState.connectionId = tiktokState.connections[0].id;
   sel.value = whState.connectionId;
   renderWhAdvertisers();
+  refreshWhWarmingCount(); // now scoped to the BC actually shown
+  ensureUsChecked(whState.connectionId, whAdvsForConnection());
 }
 
 function closeWhWarmupModal() {
@@ -2075,13 +2200,18 @@ function renderWhAdvertisers() {
   const advs = whAdvsForConnection();
   const approved = advs.filter((a) => advIsApproved(a)).length;
   const warming = whWarmingByAdv();
-  const warmingN = advs.filter((a) => advIsApproved(a) && warming.has(String(a.advertiser_id))).length;
+  const warmed = whWarmedByAdv(whState.connectionId);
+  const appr = advs.filter((a) => advIsApproved(a)).map((a) => String(a.advertiser_id));
+  const warmingN = appr.filter((id) => warming.has(id)).length;
+  const warmedN = appr.filter((id) => !warming.has(id) && warmed.has(id)).length;
   document.getElementById("whSummary").innerHTML = `
     <span class="tk-sum-item"><strong>${advs.length}</strong> account${advs.length === 1 ? "" : "s"}</span>
     <span class="tk-sum-item ok"><strong>${approved}</strong> Approved</span>
     <span class="tk-sum-item warn"><strong>${advs.length - approved}</strong> Suspended</span>
     <span class="tk-sum-item"><strong>${warmingN}</strong> warming up</span>
-    <span class="tk-sum-item ok"><strong>${approved - warmingN}</strong> remaining</span>`;
+    <span class="tk-sum-item ok"><strong>${warmedN}</strong> warmed up</span>
+    <span class="tk-sum-item"><strong>${appr.length - warmingN - warmedN}</strong> remaining</span>
+    ${acctUsSummaryHtml(advs, "wh")}`;
 
   // Search box lives outside this container (static markup) so re-rendering
   // the rows never steals its focus/cursor.
@@ -2108,7 +2238,7 @@ function whAdvRow(a) {
         <span class="tk-adv-name">${escapeHtml(a.advertiser_name || id)}</span>
         <span class="tk-adv-meta">${escapeHtml(meta)}</span>
       </span>
-      ${whWarmingByAdv().has(id) ? `<span class="tk-adv-status wh-warming-tag" title="This account already has a WH campaign warming up">Warming up${whWarmingByAdv().get(id) > 1 ? ` ×${whWarmingByAdv().get(id)}` : ""}</span>` : ""}
+      ${acctTagsHtml(whState.connectionId, id)}
       <span class="tk-adv-status ${ok ? "ok" : "warn"}">${ok ? "Approved" : "Suspended"}</span>
     </label>`;
 }
@@ -2119,8 +2249,7 @@ function syncWhSelectAll() {
   const cb = document.getElementById("whSelectAll");
   cb.checked = all;
   cb.disabled = approved.length === 0;
-  const warming = whWarmingByAdv();
-  const remaining = approved.filter((a) => !warming.has(String(a.advertiser_id)));
+  const remaining = whRemainingAdvs();
   const rem = document.getElementById("whSelectRemaining");
   rem.checked =
     remaining.length > 0 &&
@@ -2309,6 +2438,7 @@ async function loadWhWarmingList() {
   try {
     const res = await listWhWarmup(whState.connectionId);
     whWarmingState.campaigns = res.campaigns || [];
+    storeWhData(whState.connectionId, res);
     renderWhWarmingList();
     updateWhWarmingCount();
   } catch (err) {
@@ -2322,6 +2452,7 @@ async function refreshWhWarmingCount() {
   try {
     const res = await listWhWarmup(whState.connectionId);
     whWarmingState.campaigns = res.campaigns || [];
+    storeWhData(whState.connectionId, res);
     updateWhWarmingCount();
   } catch (_) {
     /* box just shows no count yet */
@@ -2640,6 +2771,22 @@ function wireCampaignCreatorEvents() {
     ccState.run.connectionId = e.target.value;
     ccState.run.selected.clear();
     renderCcRunAdvertisers();
+    loadWhData(ccState.run.connectionId);
+    ensureUsChecked(ccState.run.connectionId, ccRunAdvs());
+  });
+
+  // Account-status tags (warming / warmed / US) redraw whichever list is open.
+  acctState.rerender.add(() => {
+    if (document.getElementById("whWarmupModal").classList.contains("open") && !document.getElementById("whStep1").hidden) renderWhAdvertisers();
+  });
+  acctState.rerender.add(() => {
+    if (document.getElementById("campaignCreatorModal").classList.contains("open") && !document.getElementById("ccRunStep1").hidden) renderCcRunAdvertisers();
+  });
+  document.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-us-recheck]");
+    if (!b) return;
+    if (b.dataset.usRecheck === "wh") ensureUsChecked(whState.connectionId, whAdvsForConnection(), true);
+    else ensureUsChecked(ccState.run.connectionId, ccRunAdvs(), true);
   });
   document.getElementById("ccRunSelectAll").addEventListener("change", (e) => {
     const approved = ccRunAdvs().filter((a) => advIsApproved(a));
@@ -3206,6 +3353,8 @@ function openRunWizard(tpl) {
     r.connectionId = tiktokState.connections[0].id;
     sel.value = r.connectionId;
     renderCcRunAdvertisers();
+    loadWhData(r.connectionId);
+    ensureUsChecked(r.connectionId, ccRunAdvs());
   }
   runGoStep(1);
 }
@@ -3216,7 +3365,8 @@ function renderCcRunAdvertisers() {
   document.getElementById("ccRunSummary").innerHTML = `
     <span class="tk-sum-item"><strong>${advs.length}</strong> account${advs.length === 1 ? "" : "s"}</span>
     <span class="tk-sum-item ok"><strong>${approved}</strong> Approved</span>
-    <span class="tk-sum-item warn"><strong>${advs.length - approved}</strong> Suspended</span>`;
+    <span class="tk-sum-item warn"><strong>${advs.length - approved}</strong> Suspended</span>
+    ${acctUsSummaryHtml(advs, "cc")}`;
   // Search box lives outside this container (static markup) so re-rendering
   // the rows never steals its focus/cursor.
   const query = document.getElementById("ccRunAdvSearch")?.value || "";
@@ -3232,6 +3382,7 @@ function renderCcRunAdvertisers() {
         return `<label class="tk-adv${ok ? "" : " disabled"}">
           <input type="checkbox" data-cc-adv="${escapeHtml(id)}" ${ccState.run.selected.has(id) ? "checked" : ""} ${ok ? "" : "disabled"} />
           <span class="tk-adv-main"><span class="tk-adv-name">${escapeHtml(a.advertiser_name || id)}</span><span class="tk-adv-meta">${escapeHtml(meta)}${campaignName ? ` <span class="tk-adv-campaign">| ${escapeHtml(campaignName)}</span>` : ""}</span></span>
+          ${acctTagsHtml(ccState.run.connectionId, id)}
           <span class="tk-adv-status ${ok ? "ok" : "warn"}">${ok ? "Approved" : "Suspended"}</span>
         </label>`;
       }).join("")

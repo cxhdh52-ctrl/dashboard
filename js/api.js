@@ -695,3 +695,24 @@ export async function autoStopSettings(patch = {}) {
   });
   return readTiktokResponse(res, "Couldn't update auto-stop"); // { settings: { enabled, threshold } }
 }
+
+// ---------------- US availability per ad account ----------------
+// Cached map { advertiser_id: { us, checked_at } } (see wh-warmup.js usStatus).
+export async function fetchUsStatus() {
+  const res = await fetch("/.netlify/functions/wh-warmup", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "us_status" }),
+  });
+  return readTiktokResponse(res, "Couldn't load US availability"); // { accounts }
+}
+
+// Re-checks a small chunk of accounts against TikTok and caches the result.
+export async function checkUsAvailability(connectionId, advertiserIds) {
+  const res = await fetch("/.netlify/functions/wh-warmup", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "us_check", connection_id: connectionId, advertiser_ids: advertiserIds }),
+  });
+  return readTiktokResponse(res, "Couldn't check US availability"); // { accounts, errors }
+}
