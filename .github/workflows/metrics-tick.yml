@@ -1,0 +1,24 @@
+# Runs the dashboard's metrics cycle every 15 minutes, so auto-stop (and the
+# auto budget-bump that rides on the same cycle) keeps working while nobody
+# has the dashboard open. Vercel's Hobby plan
+# only allows once-a-day crons, hence GitHub Actions. GitHub may delay
+# scheduled runs by a few minutes under load.
+name: metrics tick
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Run metrics cycle
+        run: |
+          curl -sS --fail-with-body --max-time 90 -o out.json \
+            -X POST "https://kryzxrads.vercel.app/api/tiktok-campaigns" \
+            -H "Content-Type: application/json" \
+            -d '{"action":"metrics"}'
+          python3 -c "import json; d=json.load(open('out.json')); print('auto-stopped:', d.get('autoStopped')); print('errors:', d.get('errors'))"
