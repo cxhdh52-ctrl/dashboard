@@ -1709,6 +1709,17 @@ function wireWhWarmupEvents() {
     renderWhAdvertisers();
     refreshWhWarmingCount(); // the "WHs Warming Up" badge is scoped to this BC too
   });
+  // Exactly the Approved accounts with no WH warming up (clears any other picks).
+  document.getElementById("whSelectRemaining").addEventListener("change", (e) => {
+    whState.selected.clear();
+    if (e.target.checked) {
+      const warming = whWarmingByAdv();
+      whAdvsForConnection()
+        .filter((a) => advIsApproved(a) && !warming.has(String(a.advertiser_id)))
+        .forEach((a) => whState.selected.add(String(a.advertiser_id)));
+    }
+    renderWhAdvertisers();
+  });
   document.getElementById("whSelectAll").addEventListener("change", (e) => {
     const approved = whAdvsForConnection().filter((a) => advIsApproved(a));
     if (e.target.checked) approved.forEach((a) => whState.selected.add(String(a.advertiser_id)));
@@ -1907,10 +1918,23 @@ async function loadWhCountries(advertiserId) {
 // list_order, i.e. the Business Center's own order), never alphabetical.
 // Array.prototype.sort is stable, so sorting on rank alone preserves that.
 function whAdvsForConnection() {
+  const warming = whWarmingByAdv();
+  const rank = (a) => advApprovedRank(a) * 2 + (warming.has(String(a.advertiser_id)) ? 1 : 0);
   return tiktokState.advertisers
     .filter((a) => a.connection_id === whState.connectionId)
     .slice()
-    .sort((a, b) => advApprovedRank(a) - advApprovedRank(b));
+    .sort((a, b) => rank(a) - rank(b));
+}
+
+// advertiser_id -> number of WH campaigns currently warming up on it (from the
+// "WHs Warming Up" list), so step 1 can show which accounts are still left.
+function whWarmingByAdv() {
+  const m = new Map();
+  for (const c of whWarmingState.campaigns || []) {
+    const id = String(c.advertiser_id || "");
+    if (id) m.set(id, (m.get(id) || 0) + 1);
+  }
+  return m;
 }
 
 // Reopen: if the user minimized mid-flow, resume exactly where they were —
@@ -2050,10 +2074,14 @@ function whGoToStep(n) {
 function renderWhAdvertisers() {
   const advs = whAdvsForConnection();
   const approved = advs.filter((a) => advIsApproved(a)).length;
+  const warming = whWarmingByAdv();
+  const warmingN = advs.filter((a) => advIsApproved(a) && warming.has(String(a.advertiser_id))).length;
   document.getElementById("whSummary").innerHTML = `
     <span class="tk-sum-item"><strong>${advs.length}</strong> account${advs.length === 1 ? "" : "s"}</span>
     <span class="tk-sum-item ok"><strong>${approved}</strong> Approved</span>
-    <span class="tk-sum-item warn"><strong>${advs.length - approved}</strong> Suspended</span>`;
+    <span class="tk-sum-item warn"><strong>${advs.length - approved}</strong> Suspended</span>
+    <span class="tk-sum-item"><strong>${warmingN}</strong> warming up</span>
+    <span class="tk-sum-item ok"><strong>${approved - warmingN}</strong> remaining</span>`;
 
   // Search box lives outside this container (static markup) so re-rendering
   // the rows never steals its focus/cursor.
@@ -2080,6 +2108,7 @@ function whAdvRow(a) {
         <span class="tk-adv-name">${escapeHtml(a.advertiser_name || id)}</span>
         <span class="tk-adv-meta">${escapeHtml(meta)}</span>
       </span>
+      ${whWarmingByAdv().has(id) ? `<span class="tk-adv-status wh-warming-tag" title="This account already has a WH campaign warming up">Warming up${whWarmingByAdv().get(id) > 1 ? ` ×${whWarmingByAdv().get(id)}` : ""}</span>` : ""}
       <span class="tk-adv-status ${ok ? "ok" : "warn"}">${ok ? "Approved" : "Suspended"}</span>
     </label>`;
 }
@@ -2090,6 +2119,14 @@ function syncWhSelectAll() {
   const cb = document.getElementById("whSelectAll");
   cb.checked = all;
   cb.disabled = approved.length === 0;
+  const warming = whWarmingByAdv();
+  const remaining = approved.filter((a) => !warming.has(String(a.advertiser_id)));
+  const rem = document.getElementById("whSelectRemaining");
+  rem.checked =
+    remaining.length > 0 &&
+    whState.selected.size === remaining.length &&
+    remaining.every((a) => whState.selected.has(String(a.advertiser_id)));
+  rem.disabled = remaining.length === 0;
 }
 
 function updateWhNextButton() {
@@ -2296,6 +2333,8 @@ function updateWhWarmingCount() {
   if (!el) return;
   const n = whWarmingState.campaigns.length;
   el.textContent = n ? `${n} warming up` : "";
+  // The account list marks/sorts by this — redraw it once the list arrives.
+  if (!document.getElementById("whStep1").hidden) renderWhAdvertisers();
 }
 
 function renderWhWarmingList() {
