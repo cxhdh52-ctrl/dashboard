@@ -393,6 +393,20 @@
 
         <label class="sm-label" for="smAngles">Angles <span class="eng-hint">— one per line, use | to force a line break</span></label>
         <textarea id="smAngles" rows="5" placeholder="POV: you finally found it&#10;Nobody talks about this…"></textarea>
+        <div class="sm-ai">
+          <div class="cl-vary-controls">
+            <select id="smAiCount" data-sm-lock>
+              <option value="5">5 angles</option>
+              <option value="8" selected>8 angles</option>
+              <option value="10">10 angles</option>
+              <option value="15">15 angles</option>
+            </select>
+            <input type="text" id="smAiGuidance" placeholder="Optional direction, e.g. shorter, POV, more curiosity" autocomplete="off" />
+            <button type="button" class="icon-btn primary" id="smAiBtn" data-sm-lock>✨ Write with Claude</button>
+          </div>
+          <span class="eng-hint">Varies the angles in the box, or writes fresh ones from your winners if it's empty.</span>
+          <div id="smAiOut"></div>
+        </div>
 
         <div class="sm-controls">
           <label>Style
@@ -404,8 +418,9 @@
           </label>
           <label>Position
             <select id="smPosition">
+              <option value="auto" selected>Auto (avoid faces &amp; busy areas)</option>
               <option value="top">Top</option>
-              <option value="upper" selected>Upper third</option>
+              <option value="upper">Upper third</option>
               <option value="middle">Middle</option>
             </select>
           </label>

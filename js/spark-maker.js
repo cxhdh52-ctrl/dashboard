@@ -32,11 +32,14 @@ const sm = {
   results: [],   // { name, blob, group, angle, source }
   busy: false,
   cancelled: false,
+  ai: { items: null, busy: false, error: null }, // Claude suggestions: { text, why, checked }
   conversion: null,
 };
 
 let mbPromise = null;
 const loadMediabunny = () => (mbPromise ||= import(MEDIABUNNY_URL));
+let askPassword = null;
+let aiPassword = null;
 let zipPromise = null;
 const loadJsZip = () => (zipPromise ||= import(JSZIP_URL).then((m) => m.default || m));
 
@@ -65,6 +68,7 @@ function saveSettings() {
       preset: $("smPosition").value,
       checkoutText: $("smCheckoutText").value,
       tab: sm.tab,
+      pv: 2,
     }));
   } catch (_) {}
 }
@@ -76,7 +80,7 @@ function restoreSettings() {
   if (typeof s.angles === "string") $("smAngles").value = s.angles;
   if (s.style) $("smStyle").value = s.style;
   if (s.size) $("smSize").value = s.size;
-  if (s.preset) $("smPosition").value = s.preset;
+  if (s.preset && s.pv === 2) $("smPosition").value = s.preset;
   if (typeof s.checkoutText === "string") $("smCheckoutText").value = s.checkoutText;
   if (s.tab === "slides") sm.tab = "slides";
 }
@@ -150,6 +154,7 @@ function blockTop(L, pos, preset) {
   let top;
   if (typeof pos === "number") top = pos * H - L.blockH / 2;
   else if (preset === "top") top = PRESET_TOP;
+  // "auto" with nothing analysed yet falls through to the upper third.
   else top = (PRESET_CENTER[preset] || PRESET_CENTER.upper) * H - L.blockH / 2;
   return Math.max(SAFE_TOP, Math.min(SAFE_BOTTOM - L.blockH, top));
 }
@@ -218,6 +223,79 @@ function drawFitted(ctx, src, sw, sh, w, h) {
   ctx.drawImage(src, (w - sw * s) / 2, (h - sh * s) / 2, sw * s, sh * s);
 }
 
+// ---------------------------------------------------------------- auto placement
+
+// Picks where the text goes on a clip/slide: the band inside the safe zone
+// with the least detail (edges) and the least skin (faces, bodies), leaning
+// slightly toward the upper third where TikTok hooks usually sit. Works on
+// the 270×480 thumbnail, so it's instant. Returns the block centre as a
+// fraction of H, or null when there's nothing to analyse.
+const AUTO_BAND = 0.2;   // band height ≈ a 2–3 line hook, fraction of H
+const AUTO_PREFER = 0.3; // preferred centre
+function autoPosition(thumb) {
+  if (!thumb) return null;
+  let data;
+  try {
+    data = thumb.getContext("2d").getImageData(0, 0, THUMB_W, THUMB_H).data;
+  } catch (_) {
+    return null;
+  }
+  const x0 = Math.round((SIDE_MARGIN / W) * THUMB_W);
+  const x1 = THUMB_W - x0;
+  const luma = new Float32Array(THUMB_W * THUMB_H);
+  const skin = new Uint8Array(THUMB_W * THUMB_H);
+  for (let i = 0, p = 0; i < luma.length; i++, p += 4) {
+    const R = data[p], G = data[p + 1], B = data[p + 2];
+    const Y = 0.299 * R + 0.587 * G + 0.114 * B;
+    const Cb = 128 - 0.168736 * R - 0.331264 * G + 0.5 * B;
+    const Cr = 128 + 0.5 * R - 0.418688 * G - 0.081312 * B;
+    luma[i] = Y;
+    skin[i] = Y > 40 && Cb >= 77 && Cb <= 127 && Cr >= 133 && Cr <= 173 ? 1 : 0;
+  }
+  // Per-row edge energy and skin share across the text columns.
+  const rowEdge = new Float32Array(THUMB_H);
+  const rowSkin = new Float32Array(THUMB_H);
+  for (let y = 1; y < THUMB_H - 1; y++) {
+    let e = 0, k = 0;
+    for (let x = Math.max(1, x0); x < Math.min(THUMB_W - 1, x1); x++) {
+      const i = y * THUMB_W + x;
+      e += Math.abs(luma[i + 1] - luma[i - 1]) + Math.abs(luma[i + THUMB_W] - luma[i - THUMB_W]);
+      k += skin[i];
+    }
+    rowEdge[y] = e / (x1 - x0);
+    rowSkin[y] = k / (x1 - x0);
+  }
+  const band = Math.round(AUTO_BAND * THUMB_H);
+  const yMin = Math.round((SAFE_TOP / H) * THUMB_H);
+  const yMax = Math.round((SAFE_BOTTOM / H) * THUMB_H) - band;
+  const cands = [];
+  for (let y = yMin; y <= yMax; y += 4) {
+    let e = 0, k = 0;
+    for (let j = y; j < y + band; j++) {
+      e += rowEdge[j];
+      k += rowSkin[j];
+    }
+    cands.push({ center: (y + band / 2) / THUMB_H, edge: e / band, skin: k / band });
+  }
+  if (!cands.length) return null;
+  const maxEdge = Math.max(1e-6, ...cands.map((c) => c.edge));
+  let best = null;
+  for (const c of cands) {
+    const cost = c.edge / maxEdge + 1.6 * c.skin + 0.9 * Math.abs(c.center - AUTO_PREFER);
+    if (!best || cost < best.cost) best = { ...c, cost };
+  }
+  return best.center;
+}
+
+// The text centre actually used for an entry: a manual drag wins, then the
+// auto-placement (when Position is Auto), then the preset.
+function posOf(entry) {
+  if (!entry) return null;
+  if (typeof entry.pos === "number") return entry.pos;
+  if ($("smPosition").value === "auto" && typeof entry.autoPos === "number") return entry.autoPos;
+  return null;
+}
+
 // ---------------------------------------------------------------- loading inputs
 
 function loadImage(file) {
@@ -237,7 +315,7 @@ async function imageEntry(file) {
   const { img, sw, sh } = await loadImage(file);
   const thumb = makeCanvas(THUMB_W, THUMB_H);
   drawFitted(thumb.getContext("2d"), img, sw, sh, THUMB_W, THUMB_H);
-  return { file, name: file.name, img, sw, sh, thumb, pos: null };
+  return { file, name: file.name, img, sw, sh, thumb, pos: null, autoPos: autoPosition(thumb) };
 }
 
 // First-ish frame through the same decoder the export uses, so the preview
@@ -265,7 +343,7 @@ async function videoThumb(file) {
 
 async function renderVideo(MB, clip, angle, opts, onProgress) {
   const overlay = makeCanvas(W, H);
-  drawAngle(overlay.getContext("2d"), angle, opts, clip.pos);
+  drawAngle(overlay.getContext("2d"), angle, opts, posOf(clip));
   const frame = makeCanvas(W, H);
   const fctx = frame.getContext("2d");
 
@@ -359,11 +437,12 @@ async function addFiles(kind, fileList) {
   try {
     if (kind === "clips") {
       for (const file of files) {
-        const entry = { file, name: file.name, thumb: null, pos: null };
+        const entry = { file, name: file.name, thumb: null, pos: null, autoPos: null };
         sm.clips.push(entry);
         renderFileLists();
         renderPreview();
         entry.thumb = await videoThumb(file);
+        entry.autoPos = autoPosition(entry.thumb);
         renderPreview();
       }
     } else if (kind === "checkout") {
@@ -464,7 +543,7 @@ function redrawAllTiles(onlyKey) {
   $("smPreview").querySelectorAll("canvas[data-sm-row]").forEach((cv) => {
     const r = byKey[cv.dataset.smRow];
     if (!r || (onlyKey && onlyKey !== r.key)) return;
-    drawPreviewTile(cv, r.entry.thumb, r.texts[Number(cv.dataset.smText)] || "", r.entry.pos);
+    drawPreviewTile(cv, r.entry.thumb, r.texts[Number(cv.dataset.smText)] || "", posOf(r.entry));
   });
 }
 
@@ -632,7 +711,7 @@ async function generateSlides(angles, opts) {
   const checkoutText = $("smCheckoutText").value.trim();
   // The checkout slide is identical in every set — render it once.
   setStatus("Rendering checkout slide…", "busy");
-  const checkout = sm.checkout ? await renderSlide(sm.checkout, checkoutText, opts, sm.checkout.pos) : null;
+  const checkout = sm.checkout ? await renderSlide(sm.checkout, checkoutText, opts, posOf(sm.checkout)) : null;
 
   const total = sm.hooks.length * angles.length;
   let done = 0;
@@ -641,7 +720,7 @@ async function generateSlides(angles, opts) {
       if (sm.cancelled) return;
       setStatus(`Rendering slideshow ${done + 1}/${total}…`, "busy");
       const group = `h${i + 1}_a${j + 1}_${slug(angles[j])}`;
-      const files = [await renderSlide(sm.hooks[i], angles[j], opts, sm.hooks[i].pos)];
+      const files = [await renderSlide(sm.hooks[i], angles[j], opts, posOf(sm.hooks[i]))];
       const sources = [sm.hooks[i].name];
       if (checkout) {
         files.push(checkout);
@@ -805,6 +884,112 @@ async function shareAll() {
   }
 }
 
+// ---------------------------------------------------------------- Claude angles
+
+async function libraryCall(action, payload) {
+  const res = await fetch(LIBRARY_ENDPOINT, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action, ...payload }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = new Error(data.error || `Request failed (${res.status})`);
+    err.status = res.status;
+    throw err;
+  }
+  return data;
+}
+
+function renderAi() {
+  const ai = sm.ai;
+  const btn = $("smAiBtn");
+  btn.textContent = ai.busy ? "Thinking…" : ai.items ? "✨ Regenerate" : "✨ Write with Claude";
+  btn.disabled = ai.busy || sm.busy;
+  const items = ai.items || [];
+  const checked = items.filter((x) => x.checked).length;
+  $("smAiOut").innerHTML = `${ai.error ? `<div class="eng-placeholder bad">${escapeHtml(ai.error)}</div>` : ""}${
+    items.length
+      ? `<div class="cl-var-list">${items
+          .map(
+            (it, i) => `<label class="cl-var">
+              <input type="checkbox" data-sm-ai="${i}" ${it.checked ? "checked" : ""} />
+              <span><span class="cl-var-text">${escapeHtml(it.text)}</span><span class="cl-var-why">${escapeHtml(it.why)}</span></span>
+            </label>`,
+          )
+          .join("")}</div>
+        <div class="cl-vary-foot">
+          <span class="eng-hint">Tick the good ones. Your picks and skips teach the next batch.</span>
+          <button type="button" class="icon-btn" data-sm-ai-act="all">${checked === items.length ? "Untick all" : "Tick all"}</button>
+          <button type="button" class="icon-btn" data-sm-ai-act="discard">Discard</button>
+          <button type="button" class="icon-btn primary" data-sm-ai-act="add" ${checked ? "" : "disabled"}>Add ${checked || ""} to angles</button>
+        </div>`
+      : ""
+  }`;
+}
+
+// Skipped suggestions are recorded as "dropped" so Claude learns from them;
+// kept ones are also saved to the Creative Library server-side.
+function aiFeedback(kept, dropped) {
+  if (!kept.length && !dropped.length) return Promise.resolve();
+  return libraryCall("feedback", { angle_id: null, kept, dropped }).catch(() => {});
+}
+
+async function aiGenerate() {
+  const ai = sm.ai;
+  if (ai.busy) return;
+  if (!aiPassword && askPassword) {
+    aiPassword = await askPassword({ title: "Write angles with Claude", hint: "Enter the dashboard password (each run uses Claude API credit)." });
+  }
+  if (!aiPassword) return;
+  ai.busy = true;
+  ai.error = null;
+  renderAi();
+  try {
+    if (ai.items && ai.items.length) {
+      await aiFeedback([], ai.items.filter((x) => !x.checked).map((x) => x.text));
+      // Ticked-but-not-added lines carry over so a regenerate never loses them.
+    }
+    const carried = (ai.items || []).filter((x) => x.checked);
+    const data = await libraryCall("variations", {
+      password: aiPassword,
+      seed_texts: angleList(),
+      count: Number($("smAiCount").value) || 8,
+      guidance: $("smAiGuidance").value.trim(),
+    });
+    ai.items = [...carried, ...(data.variations || []).map((v) => ({ ...v, checked: false }))];
+  } catch (err) {
+    if (err.status === 401) aiPassword = null;
+    ai.error = err.message;
+  } finally {
+    ai.busy = false;
+    renderAi();
+  }
+}
+
+function aiAction(act) {
+  const ai = sm.ai;
+  const items = ai.items || [];
+  if (act === "all") {
+    const all = items.every((x) => x.checked);
+    items.forEach((x) => (x.checked = !all));
+    renderAi();
+    return;
+  }
+  const kept = act === "add" ? items.filter((x) => x.checked).map((x) => x.text) : [];
+  const dropped = items.filter((x) => act !== "add" || !x.checked).map((x) => x.text);
+  aiFeedback(kept, dropped);
+  if (kept.length) {
+    const current = $("smAngles").value.replace(/\s+$/, "");
+    $("smAngles").value = (current ? `${current}\n` : "") + kept.join("\n");
+    saveSettings();
+    renderPreview();
+  }
+  ai.items = null;
+  ai.error = null;
+  renderAi();
+}
+
 // ---------------------------------------------------------------- tabs / open
 
 function applyTab(tab) {
@@ -839,8 +1024,20 @@ export function openSparkMakerWithAngles(texts) {
   open();
 }
 
-export function initSparkMaker({ onOpen } = {}) {
+export function initSparkMaker({ onOpen, askPassword: ask } = {}) {
+  askPassword = ask || null;
   restoreSettings();
+  $("smAiBtn").addEventListener("click", aiGenerate);
+  $("smAiOut").addEventListener("change", (e) => {
+    const cb = e.target.closest("[data-sm-ai]");
+    if (!cb || !sm.ai.items) return;
+    sm.ai.items[Number(cb.dataset.smAi)].checked = cb.checked;
+    renderAi();
+  });
+  $("smAiOut").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-sm-ai-act]");
+    if (b) aiAction(b.dataset.smAiAct);
+  });
   $("toolsSparkMakerBtn").addEventListener("click", () => {
     if (onOpen) onOpen();
     open();

@@ -464,7 +464,7 @@ function wireEvents() {
   document.getElementById("toolsTrackerBtn").addEventListener("click", openTrackerModal);
   wireTrackerEvents();
 
-  initSparkMaker({ onOpen: closeToolsDrawer });
+  initSparkMaker({ onOpen: closeToolsDrawer, askPassword: askTiktokPassword });
   initCreativeLibrary({ onOpen: closeToolsDrawer, askPassword: askTiktokPassword, openSparkMaker: openSparkMakerWithAngles });
   wireAutoStopToggle();
 

@@ -3,7 +3,9 @@
 //   "add_angles"  { texts[], offer?, source?, parent_id? } -> { angles }  (duplicates by text are skipped)
 //   "update_angle"{ id, patch: { text?, offer?, status?, notes? } } -> { angle }
 //   "tag"         { angle_id | null, campaign_ids[] }  -> { tagged, backfill_errors }
-//   "variations"  { password, angle_id, count?, guidance? } -> { variations: [{ text, why }] }
+//   "variations"  { password, angle_id | seed_texts[], count?, guidance?, offer? } -> { variations: [{ text, why }] }
+//                 angle_id varies one library angle; seed_texts (Spark Maker) varies
+//                 whatever is in the angles box, or writes fresh ones from the winners.
 //   "feedback"    { angle_id, kept[], dropped[], offer? }   -> { angles }  (kept ones are saved as angles)
 //
 // Angle performance = every campaign tagged with that angle, summed:
@@ -403,7 +405,7 @@ async function backfillRows(supabase, campaignIds, angleId) {
 
 const SYSTEM_PROMPT = `You write hook text for TikTok Spark Ads: short lines burned onto the first slide of a photo slideshow (or the first frame of a video) that promote mobile app installs (CPI offers) for an affiliate advertiser.
 
-You're given one source angle to vary, the account's own performance history (angles with spend, revenue and ROAS), and which of your earlier suggestions the user kept or dropped. Learn from it:
+You're given the source angle(s) to vary (or none, when asked for fresh angles), the account's own performance history (angles with spend, revenue and ROAS), and which of your earlier suggestions the user kept or dropped. Learn from it:
 - Winners show the voice, structure, length and emotional triggers that convert for this account. Stay close to them.
 - Dead angles show what to avoid.
 - Kept suggestions are the user's taste; dropped ones are not. Lean toward what they keep.
@@ -448,14 +450,28 @@ async function makeVariations(supabase, body) {
   }
   const count = Math.max(3, Math.min(15, Number(body.count) || 8));
   const lib = await listLibrary(supabase);
-  const source = lib.angles.find((a) => a.id === body.angle_id);
-  if (!source) return json(404, { error: "Angle not found" });
+  const seeds = (Array.isArray(body.seed_texts) ? body.seed_texts : []).map(cleanText).filter(Boolean).slice(0, 20);
+  let source = null;
+  if (body.angle_id) {
+    source = lib.angles.find((a) => a.id === body.angle_id);
+    if (!source) return json(404, { error: "Angle not found" });
+  }
+  const offer = source ? source.offer : body.offer || null;
+  const seedSet = new Set(seeds.map((t) => t.toLowerCase()));
 
-  const sameOffer = lib.angles.filter((a) => a.status !== "archived" && (!source.offer || !a.offer || a.offer === source.offer));
-  const ran = sameOffer.filter((a) => a.id !== source.id && a.stats.campaigns && a.stats.spend >= 10);
+  const sameOffer = lib.angles.filter((a) => a.status !== "archived" && (!offer || !a.offer || a.offer === offer));
+  const ran = sameOffer.filter(
+    (a) => (!source || a.id !== source.id) && !seedSet.has(a.text.toLowerCase()) && a.stats.campaigns && a.stats.spend >= 10,
+  );
   const winners = [...ran].sort((a, b) => b.stats.roas - a.stats.roas).filter((a) => a.verdict === "winner" || a.verdict === "break_even").slice(0, 15);
   const dead = ran.filter((a) => a.verdict === "dead").sort((a, b) => b.stats.spend - a.stats.spend).slice(0, 10);
-  const children = lib.angles.filter((a) => a.parent_id === source.id);
+  const children = source ? lib.angles.filter((a) => a.parent_id === source.id) : [];
+  const seedAngles = seeds.map((t) => lib.angles.find((a) => a.text.toLowerCase() === t.toLowerCase()) || { text: t });
+  const sourceBlock = source
+    ? `Source angle to vary:\n${fmtAngle(source)}`
+    : seedAngles.length
+      ? `Source angles to vary (spread your variations across them; never repeat them):\n${seedAngles.map(fmtAngle).join("\n")}`
+      : "No source angle: write brand-new angles in the style of this account's winners (or strong general TikTok hooks if there are none). Each must be a different idea.";
 
   const { data: fb } = await supabase
     .from("angle_feedback")
@@ -466,8 +482,8 @@ async function makeVariations(supabase, body) {
   const dropped = (fb || []).filter((f) => !f.kept).map((f) => `- "${f.text}"`);
 
   const parts = [
-    `Offer type: ${source.offer || "CPI app install"}`,
-    `Source angle to vary:\n${fmtAngle(source)}`,
+    `Offer type: ${offer || "CPI app install"}`,
+    sourceBlock,
     children.length ? `Variations of it already in the library (don't repeat these):\n${children.map(fmtAngle).join("\n")}` : "",
     winners.length ? `This account's best angles:\n${winners.map(fmtAngle).join("\n")}` : "No winning angles recorded yet — rely on the source angle and general TikTok hook craft.",
     dead.length ? `Angles that lost money:\n${dead.map(fmtAngle).join("\n")}` : "",

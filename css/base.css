@@ -1132,6 +1132,9 @@ select.tracker-type-select.tracker-type-slides {
 .sm-chip button { background: none; border: none; color: var(--text-2); cursor: pointer; font-size: 11px; padding: 0 4px; }
 .sm-chip button:hover { color: var(--loss); }
 #smCheckoutText { width: 100%; margin: 8px 0 0; }
+.sm-ai { margin: 8px 0 12px; padding: 10px; border: 1px dashed var(--border); border-radius: var(--radius-sm); }
+.sm-ai > .eng-hint { display: block; font-size: 11.5px; margin-top: 6px; }
+.sm-ai .cl-vary-controls select { flex: 0 0 auto; width: auto; margin: 0; }
 .sm-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .sm-controls label { display: flex; flex-direction: column; gap: 4px; font-size: 11.5px; font-weight: 600; color: var(--text-1); }
 .sm-controls label:last-child { grid-column: 1 / -1; }
