@@ -1223,3 +1223,4 @@ select.tracker-type-select.tracker-type-slides {
 .tk-adv-status.wh-warming-tag { color: var(--accent, #4aa3ff); border-color: color-mix(in srgb, var(--accent, #4aa3ff) 55%, transparent); margin-right: 6px; }
 .tk-adv .tk-adv-status + .tk-adv-status { margin-left: 6px; }
 .tk-summary .us-recheck { padding: 2px 10px; font-size: 12px; margin-left: auto; }
+.wh-warming-source b.neg { color: var(--loss); }

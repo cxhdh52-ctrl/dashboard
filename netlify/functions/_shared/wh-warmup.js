@@ -4,7 +4,7 @@
 // tiktok-mcp.js helpers; adds nothing to the normal campaign pipeline except a
 // filter so WH campaign_ids never enter tiktok_campaigns.
 
-const { mcpCall, loadCampaignDetail, deleteCampaign, setCampaignStatus } = require("./tiktok-mcp");
+const { mcpCall, deleteCampaign, setCampaignStatus, classifyDelivery, reviewState } = require("./tiktok-mcp");
 
 // ---------------------------------------------------------------------------
 // Config
@@ -558,80 +558,122 @@ async function createWarmupForAdvertiser({ client, advertiserId, bcId, currency,
 
 const CLEANUP_ATTEMPT_CAP = 5;
 
-async function cleanupOneWarmup({ client, row, advertiserStatus, timezone }) {
-  const advId = String(row.advertiser_id);
-  const campaignId = String(row.campaign_id);
-  const now = new Date().toISOString();
-  const deletedPatch = { cleanup_status: "DELETED", deleted_at: now, cleanup_error: null, updated_at: now };
-
-  // 1. Does the campaign still exist, and is it already deleted on TikTok's side?
-  try {
-    const cr = await mcpCall(client, "campaign_get", {
+// Fast status read for one WH campaign — 3 calls (ad groups, their review, the
+// campaign's lifetime spend), no full detail load. Returns
+//   { gone } | { live: bool, label, spend, impressions }
+// `live` = it can spend: an ad group is delivering, OR it has ANY spend or
+// impressions. Spend counts even if the status read lags behind TikTok.
+async function whFastStatus(client, advId, campaignId) {
+  const g = await mcpCallThrottled(client, "adgroup_get", {
+    advertiser_id: advId,
+    fields: ["adgroup_id", "campaign_id", "operation_status", "secondary_status"],
+    filtering: { campaign_ids: [campaignId] },
+    page_size: 20,
+  });
+  const ags = (g?.list || []).filter((x) => String(x.campaign_id) === campaignId);
+  if (!ags.length) {
+    const cr = await mcpCallThrottled(client, "campaign_get", {
       advertiser_id: advId,
       fields: ["campaign_id", "operation_status", "secondary_status"],
       filtering: { campaign_ids: [campaignId] },
     });
     const c = (cr?.list || []).find((x) => String(x.campaign_id) === campaignId);
-    if (!c) return { status: "DELETED", patch: deletedPatch }; // gone
-    if (/DELETE/i.test(String(c.secondary_status || c.operation_status || ""))) {
-      return { status: "DELETED", patch: deletedPatch };
-    }
-  } catch (err) {
-    if (/not exist|not found|no such|deleted/i.test(err.message || "")) {
-      return { status: "DELETED", patch: deletedPatch };
-    }
-    return { status: row.cleanup_status, patch: { cleanup_error: err.message, updated_at: now } };
+    if (!c || /DELETE/i.test(String(c.secondary_status || c.operation_status || ""))) return { gone: true };
   }
 
-  // 2. Derive the effective status to check for genuine "Active".
-  let detail;
+  let reviews = {};
+  if (ags.length) {
+    try {
+      const rv = await mcpCallThrottled(client, "adgroup_review_info_get", {
+        advertiser_id: advId,
+        adgroup_ids: ags.map((x) => String(x.adgroup_id)),
+      });
+      reviews = rv?.ad_group_review_map || {};
+    } catch (_) {
+      /* delivery status alone still decides */
+    }
+  }
+
+  let spend = 0;
+  let impressions = 0;
   try {
-    detail = await loadCampaignDetail({
-      client,
-      advertiserId: advId,
-      advertiserStatus,
-      campaignId,
-      timezone: timezone || null,
+    const rep = await mcpCallThrottled(client, "report_integrated_get", {
+      report_type: "BASIC",
+      service_type: "AUCTION",
+      data_level: "AUCTION_CAMPAIGN",
+      advertiser_id: advId,
+      dimensions: ["campaign_id"],
+      metrics: ["spend", "impressions"],
+      query_lifetime: true,
+      filtering: [{ field_name: "campaign_ids", filter_type: "IN", filter_value: JSON.stringify([campaignId]) }],
+      page_size: 10,
     });
-  } catch (err) {
-    if (/not exist|not found|no such|deleted/i.test(err.message || "")) {
-      return { status: "DELETED", patch: deletedPatch };
+    for (const r of rep?.list || []) {
+      if (String(r.dimensions?.campaign_id || "") !== campaignId) continue;
+      spend += Number(r.metrics?.spend) || 0;
+      impressions += Number(r.metrics?.impressions) || 0;
     }
-    return { status: row.cleanup_status, patch: { cleanup_error: err.message, updated_at: now } };
+  } catch (_) {
+    /* status alone still decides */
   }
 
-  const label = String(detail.effective_status || "").toLowerCase();
+  const classes = ags.map((ag) => reviewState(reviews[String(ag.adgroup_id)]) || classifyDelivery(ag.secondary_status || ag.operation_status));
+  const delivering = classes.includes("active");
+  const label = delivering
+    ? "active"
+    : classes.find((c) => c === "rejected") || classes.find((c) => c === "in_review") || classes[0] || "unknown";
+  return { live: delivering || spend > 0 || impressions > 0, label, spend, impressions, accountProblem: classes.includes("account") };
+}
+
+async function cleanupOneWarmup({ client, row, advertiserStatus }) {
+  const advId = String(row.advertiser_id);
+  const campaignId = String(row.campaign_id);
+  const now = new Date().toISOString();
+  const deletedPatch = { cleanup_status: "DELETED", deleted_at: now, cleanup_error: null, updated_at: now };
   const advHealthyEarly = ["", "STATUS_ENABLE"].includes(String(advertiserStatus || "").toUpperCase());
 
-  if (label === "deleted") return { status: "DELETED", patch: deletedPatch };
+  // Once it has gone live it is paused + deleted on every pass until done —
+  // no need to re-read its status first.
+  let st = null;
+  if (row.cleanup_status === "WAITING_FOR_ACTIVE") {
+    try {
+      st = await whFastStatus(client, advId, campaignId);
+    } catch (err) {
+      if (/not exist|not found|no such|deleted/i.test(err.message || "")) return { status: "DELETED", patch: deletedPatch };
+      return { status: row.cleanup_status, patch: { cleanup_error: err.message, updated_at: now } };
+    }
+    if (st.gone) return { status: "DELETED", patch: deletedPatch };
+    const spendPatch = { spend: Math.round(st.spend * 100) / 100, last_status: st.label };
 
-  if (label !== "active") {
-    // The account is suspended/limited: the campaign can never go Active and we
-    // can't delete it either — stop polling it.
-    if (!advHealthyEarly || label.includes("suspend") || label.includes("punish")) {
-      return {
-        status: "FAILED",
-        patch: {
-          cleanup_status: "FAILED",
-          cleanup_error: "Advertiser account is suspended — warmup campaign can neither go Active nor be deleted.",
-          updated_at: now,
-        },
-      };
+    if (!st.live) {
+      if (!advHealthyEarly || st.accountProblem) {
+        return {
+          status: "FAILED",
+          patch: {
+            cleanup_status: "FAILED",
+            cleanup_error: "Advertiser account is suspended — warmup campaign can neither go Active nor be deleted.",
+            updated_at: now,
+            ...spendPatch,
+          },
+        };
+      }
+      // In Review / Rejected / Pending … keep waiting, give up after 3 days.
+      const ageMs = Date.now() - Date.parse(row.created_at || now);
+      if (ageMs > 3 * 24 * 3600 * 1000) {
+        return {
+          status: "FAILED",
+          patch: {
+            cleanup_status: "FAILED",
+            cleanup_error: `Never reached Active after 3 days (last status: ${st.label}). Delete it manually in TikTok if needed.`,
+            updated_at: now,
+            ...spendPatch,
+          },
+        };
+      }
+      return { status: "WAITING_FOR_ACTIVE", patch: { updated_at: now, cleanup_error: null, ...spendPatch } };
     }
-    // In Review / Pending / Out of Budget … keep waiting, but give up after 3 days.
-    const ageMs = Date.now() - Date.parse(row.created_at || now);
-    if (ageMs > 3 * 24 * 3600 * 1000) {
-      return {
-        status: "FAILED",
-        patch: {
-          cleanup_status: "FAILED",
-          cleanup_error: `Never reached Active after 3 days (last status: ${detail.effective_status}). Delete it manually in TikTok if needed.`,
-          updated_at: now,
-        },
-      };
-    }
-    return { status: "WAITING_FOR_ACTIVE", patch: { updated_at: now } };
   }
+  const spendPatch = st ? { spend: Math.round(st.spend * 100) / 100, last_status: st.label } : {};
 
   // It is genuinely Active. Step 1: PAUSE — retried every cycle, uncapped,
   // never skipped even if a previous cycle already paused it (idempotent on
@@ -641,6 +683,7 @@ async function cleanupOneWarmup({ client, row, advertiserStatus, timezone }) {
   try {
     await setCampaignStatus({ client, advertiserId: advId, campaignId, operationStatus: "DISABLE" });
   } catch (err) {
+    if (/not exist|not found|no such|already.*delet/i.test(err.message || "")) return { status: "DELETED", patch: { ...deletedPatch, ...becameActivePatch, ...spendPatch } };
     return {
       status: "PAUSE_PENDING",
       patch: {
@@ -648,6 +691,7 @@ async function cleanupOneWarmup({ client, row, advertiserStatus, timezone }) {
         cleanup_error: `Pause failed, retrying every cycle: ${err.message || "unknown error"}`,
         updated_at: now,
         ...becameActivePatch,
+        ...spendPatch,
       },
     };
   }
@@ -655,7 +699,7 @@ async function cleanupOneWarmup({ client, row, advertiserStatus, timezone }) {
   // Step 2: now that it's paused (so it can't spend either way), delete it.
   // Unlike pause, this DOES eventually give up — that's fine, since the
   // account is already safe by this point.
-  const patch = { cleanup_status: "DELETE_PENDING", updated_at: now, ...becameActivePatch };
+  const patch = { cleanup_status: "DELETE_PENDING", updated_at: now, ...becameActivePatch, ...spendPatch };
   const advHealthy = advHealthyEarly;
 
   try {

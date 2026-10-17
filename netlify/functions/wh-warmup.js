@@ -384,11 +384,49 @@ async function createBatch(supabase, body) {
 // cleanup — the "Active -> delete" state machine, driven by the 60s refresh
 // ---------------------------------------------------------------------------
 
+// Runs every 30s from Supabase pg_cron (supabase/wh_cleanup_cron.sql) — so it
+// keeps going with the dashboard closed — and also from the dashboard's 60s
+// refresh. A lock in app_settings keeps two runs from overlapping.
+//
+// Fair + fast: rows are checked least-recently-checked first (nothing starves
+// behind a slow one), up to CLEANUP_CONCURRENCY at once, each with a 3-call
+// status read (_shared/wh-warmup.js whFastStatus). A campaign is paused the
+// moment it delivers OR shows any spend/impressions, then deleted.
+const CLEANUP_CONCURRENCY = 5;
+const CLEANUP_BUDGET_MS = 40000;
+const CLEANUP_LOCK_KEY = "wh_cleanup_lock";
+
+async function takeCleanupLock(supabase) {
+  try {
+    const { data } = await supabase.from("app_settings").select("value").eq("key", CLEANUP_LOCK_KEY).maybeSingle();
+    const until = Date.parse(data?.value?.until || 0);
+    if (until && until > Date.now()) return false;
+    await supabase
+      .from("app_settings")
+      .upsert(
+        { key: CLEANUP_LOCK_KEY, value: { until: new Date(Date.now() + CLEANUP_BUDGET_MS + 10000).toISOString() }, updated_at: new Date().toISOString() },
+        { onConflict: "key" }
+      );
+  } catch (_) {
+    /* no lock table -> just run */
+  }
+  return true;
+}
+
+async function releaseCleanupLock(supabase) {
+  try {
+    await supabase.from("app_settings").upsert({ key: CLEANUP_LOCK_KEY, value: { until: null }, updated_at: new Date().toISOString() }, { onConflict: "key" });
+  } catch (_) {
+    /* expires on its own */
+  }
+}
+
 async function cleanupBatch(supabase) {
   const { data: rows, error } = await supabase
     .from("wh_warmup_campaigns")
     .select("*")
-    .in("cleanup_status", ["WAITING_FOR_ACTIVE", "PAUSE_PENDING", "DELETE_PENDING"]);
+    .in("cleanup_status", ["WAITING_FOR_ACTIVE", "PAUSE_PENDING", "DELETE_PENDING"])
+    .order("updated_at", { ascending: true, nullsFirst: true });
   if (error) {
     if (/does not exist|schema cache|could not find the table/i.test(error.message || "")) {
       return json(200, { ok: true, checked: 0, deleted: 0, failed: 0, pending: 0, unmigrated: true });
@@ -396,72 +434,88 @@ async function cleanupBatch(supabase) {
     return json(500, { error: "Supabase read failed", details: sbErr(error) });
   }
   if (!rows || !rows.length) return json(200, { ok: true, checked: 0, deleted: 0, failed: 0, pending: 0 });
+  if (!(await takeCleanupLock(supabase))) return json(200, { ok: true, skipped: "another cleanup run is in progress" });
+
+  // Live / paused-but-not-deleted ones first, then least recently checked.
+  const urgency = (r) => (r.cleanup_status === "PAUSE_PENDING" ? 0 : r.cleanup_status === "DELETE_PENDING" ? 1 : 2);
+  rows.sort((a, b) => urgency(a) - urgency(b));
 
   const byConnection = {};
   for (const r of rows) (byConnection[r.connection_id] = byConnection[r.connection_id] || []).push(r);
 
-  const tally = { checked: 0, deleted: 0, failed: 0, pending: 0 };
-  const deadline = Date.now() + 9000;
+  const tally = { checked: 0, deleted: 0, failed: 0, pending: 0, live: 0 };
+  const deadline = Date.now() + CLEANUP_BUDGET_MS;
 
-  for (const [connectionId, list] of Object.entries(byConnection)) {
-    if (Date.now() > deadline) break;
-    const { data: conn } = await supabase.from("tiktok_connections").select("*").eq("id", connectionId).maybeSingle();
-    if (!conn) {
-      // connection gone -> abandon its WH rows
-      for (const r of list) {
-        await patchRow(supabase, r.campaign_id, { cleanup_status: "FAILED", cleanup_error: "Connection removed.", updated_at: new Date().toISOString() });
-        tally.failed += 1;
-      }
-      continue;
-    }
-
-    // advertiser status/timezone for status derivation
-    const advIds = [...new Set(list.map((r) => String(r.advertiser_id)))];
-    const { data: advRows } = await supabase
-      .from("tiktok_advertisers")
-      .select("advertiser_id, status, timezone, display_timezone")
-      .eq("connection_id", connectionId)
-      .in("advertiser_id", advIds);
-    const advById = new Map((advRows || []).map((a) => [String(a.advertiser_id), a]));
-
-    try {
-      await withClient(supabase, conn, async (client) => {
+  try {
+    for (const [connectionId, list] of Object.entries(byConnection)) {
+      if (Date.now() > deadline) break;
+      const { data: conn } = await supabase.from("tiktok_connections").select("*").eq("id", connectionId).maybeSingle();
+      if (!conn) {
         for (const r of list) {
-          if (Date.now() > deadline) break;
-          tally.checked += 1;
-          const adv = advById.get(String(r.advertiser_id)) || {};
-          const out = await cleanupOneWarmup({
-            client,
-            row: r,
-            advertiserStatus: adv.status,
-            timezone: adv.timezone || adv.display_timezone || null,
-          });
-          await patchRow(supabase, r.campaign_id, out.patch);
-          if (out.status === "DELETED") {
-            tally.deleted += 1;
-            // The WH campaign is gone from TikTok — pull its Detailed Metrics row
-            // now instead of waiting for the next discovery sync to prune it.
-            try {
-              await supabase.from("tiktok_campaigns").delete().eq("campaign_id", String(r.campaign_id));
-            } catch (e) {
-              console.error(`[wh-warmup] tiktok_campaigns cleanup ${r.campaign_id} failed: ${e.message}`);
-            }
-          } else if (out.status === "FAILED") tally.failed += 1;
-          else tally.pending += 1;
+          await patchRow(supabase, r.campaign_id, { cleanup_status: "FAILED", cleanup_error: "Connection removed.", updated_at: new Date().toISOString() });
+          tally.failed += 1;
         }
-      });
-    } catch (err) {
-      console.error(`[wh-warmup] cleanup connection ${connectionId} failed: ${err.message}`);
-      // leave rows as-is; next cycle retries
+        continue;
+      }
+
+      const advIds = [...new Set(list.map((r) => String(r.advertiser_id)))];
+      const { data: advRows } = await supabase
+        .from("tiktok_advertisers")
+        .select("advertiser_id, status")
+        .eq("connection_id", connectionId)
+        .in("advertiser_id", advIds);
+      const advById = new Map((advRows || []).map((a) => [String(a.advertiser_id), a]));
+
+      try {
+        await withClient(supabase, conn, async (client) => {
+          const queue = list.slice();
+          const worker = async () => {
+            while (queue.length && Date.now() < deadline) {
+              const r = queue.shift();
+              tally.checked += 1;
+              let out;
+              try {
+                out = await cleanupOneWarmup({ client, row: r, advertiserStatus: advById.get(String(r.advertiser_id))?.status });
+              } catch (err) {
+                out = { status: r.cleanup_status, patch: { cleanup_error: err.message, updated_at: new Date().toISOString() } };
+              }
+              await patchRow(supabase, r.campaign_id, out.patch);
+              if (out.patch.became_active_at) tally.live += 1;
+              if (out.status === "DELETED") {
+                tally.deleted += 1;
+                try {
+                  await supabase.from("tiktok_campaigns").delete().eq("campaign_id", String(r.campaign_id));
+                } catch (e) {
+                  console.error(`[wh-warmup] tiktok_campaigns cleanup ${r.campaign_id} failed: ${e.message}`);
+                }
+              } else if (out.status === "FAILED") tally.failed += 1;
+              else tally.pending += 1;
+            }
+          };
+          await Promise.all(Array.from({ length: Math.min(CLEANUP_CONCURRENCY, queue.length) }, worker));
+        });
+      } catch (err) {
+        console.error(`[wh-warmup] cleanup connection ${connectionId} failed: ${err.message}`);
+      }
     }
+  } finally {
+    await releaseCleanupLock(supabase);
   }
 
-  return json(200, { ok: true, ...tally });
+  return json(200, { ok: true, ...tally, remaining: rows.length - tally.checked });
 }
 
+// spend / last_status come from supabase/wh_cleanup_cron.sql — if that hasn't
+// been run, retry without them so the lifecycle fields still save.
 async function patchRow(supabase, campaignId, patch) {
   try {
-    await supabase.from("wh_warmup_campaigns").update(patch).eq("campaign_id", String(campaignId));
+    const { error } = await supabase.from("wh_warmup_campaigns").update(patch).eq("campaign_id", String(campaignId));
+    if (error && /spend|last_status/.test(error.message || "")) {
+      const { spend, last_status, ...rest } = patch;
+      await supabase.from("wh_warmup_campaigns").update(rest).eq("campaign_id", String(campaignId));
+    } else if (error) {
+      console.error(`[wh-warmup] patch ${campaignId} failed: ${error.message}`);
+    }
   } catch (err) {
     console.error(`[wh-warmup] patch ${campaignId} failed: ${err.message}`);
   }
@@ -489,7 +543,7 @@ async function listWarmups(supabase, connectionId) {
   let warmupQ = supabase
     .from("wh_warmup_campaigns")
     .select(
-      "campaign_id, advertiser_id, advertiser_name, campaign_name, target_country, daily_budget, currency, cleanup_status, cleanup_attempts, cleanup_error, became_active_at, deleted_at, created_at, connection_id"
+      "*"
     )
     .in("cleanup_status", ["WAITING_FOR_ACTIVE", "PAUSE_PENDING", "DELETE_PENDING"])
     .order("created_at", { ascending: false })

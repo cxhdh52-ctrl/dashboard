@@ -2484,6 +2484,16 @@ function renderWhWarmingList() {
   syncWhWarmingToolbar();
 }
 
+// Status from the cleanup's own last read (last_status, written every ~30s).
+function whRowStatus(c, isStray) {
+  if (isStray) return { label: "Checking…", tone: "neutral", detail: null };
+  if (c.cleanup_status === "PAUSE_PENDING") return { label: "Went live — pausing", tone: "bad", detail: c.cleanup_error || null };
+  if (c.cleanup_status === "DELETE_PENDING") return { label: "Paused — deleting", tone: "warn", detail: c.cleanup_error || null };
+  const map = { in_review: ["In Review", "warn"], rejected: ["Rejected", "bad"], scheduled: ["Scheduled", "neutral"], budget: ["Out of Budget", "warn"], account: ["Account problem", "bad"] };
+  const [label, tone] = map[c.last_status] || ["In Review", "warn"];
+  return { label, tone, detail: c.cleanup_error || null };
+}
+
 function whWarmingRowHtml(c) {
   const id = String(c.campaign_id);
   const isStray = c.origin === "stray";
@@ -2491,11 +2501,7 @@ function whWarmingRowHtml(c) {
   const pending = state.pendingActions.has(`wh:${id}`);
   const status = c.effective_status
     ? { label: c.effective_status, tone: c.effective_tone, detail: c.status_detail }
-    : {
-        label: isStray ? "Checking…" : c.cleanup_status === "WAITING_FOR_ACTIVE" ? "In Review" : c.cleanup_status || "—",
-        tone: "neutral",
-        detail: null,
-      };
+    : whRowStatus(c, isStray);
   const checked = whWarmingState.selected.has(id);
   return `
     <tr data-wh-row="${escapeHtml(id)}" class="${isStray ? "wh-warming-row-stray" : ""}">
@@ -2509,7 +2515,7 @@ function whWarmingRowHtml(c) {
       <td>${statusBadge(status)}</td>
       <td><div class="wh-warming-source">
         <strong>${escapeHtml(c.campaign_name || id)}</strong>${isStray ? `<span class="wh-stray-badge" title="Found by a sync — not created through Campaign Creator or WH Warmup. Check it: pause or delete it if it shouldn't be running.">Stray</span>` : ""}
-        <span>${escapeHtml(c.advertiser_name || c.advertiser_id)}</span>
+        <span>${escapeHtml(c.advertiser_name || c.advertiser_id)}${c.spend != null ? ` · <b class="${Number(c.spend) > 0 ? "neg" : ""}">$${Number(c.spend).toFixed(2)} spent</b>` : ""}</span>
       </div></td>
       <td><button type="button" class="rowmenu-btn" data-row-menu="wh:${escapeHtml(id)}" aria-label="Campaign actions" title="Campaign actions">⋮</button></td>
     </tr>`;

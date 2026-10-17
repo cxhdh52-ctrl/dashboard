@@ -1687,6 +1687,8 @@ module.exports = {
   autoProcessReadyEngagements,
   withoutTemporaryCampaigns,
   deriveEffectiveStatus,
+  classifyDelivery,
+  reviewState,
   applyAppealOverlay,
   applyAppealOverlayByCampaignId,
   deriveAdGroupStatus,
