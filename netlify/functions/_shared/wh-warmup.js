@@ -683,7 +683,7 @@ async function cleanupOneWarmup({ client, row, advertiserStatus }) {
   try {
     await setCampaignStatus({ client, advertiserId: advId, campaignId, operationStatus: "DISABLE" });
   } catch (err) {
-    if (/not exist|not found|no such|already.*delet/i.test(err.message || "")) return { status: "DELETED", patch: { ...deletedPatch, ...becameActivePatch, ...spendPatch } };
+    if (/not exist|not found|no such|been deleted|already.*delet/i.test(err.message || "")) return { status: "DELETED", patch: { ...deletedPatch, ...becameActivePatch, ...spendPatch } };
     return {
       status: "PAUSE_PENDING",
       patch: {
@@ -708,7 +708,7 @@ async function cleanupOneWarmup({ client, row, advertiserStatus }) {
   } catch (err) {
     const msg = err.message || "delete failed";
     // Already gone -> success.
-    if (/not exist|not found|no such|already.*delet/i.test(msg)) {
+    if (/not exist|not found|no such|been deleted|already.*delet/i.test(msg)) {
       return { status: "DELETED", patch: { ...patch, cleanup_status: "DELETED", deleted_at: now, cleanup_error: null } };
     }
     const attempts = Number(row.cleanup_attempts || 0) + 1;
