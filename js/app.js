@@ -194,6 +194,9 @@ async function checkForNewVersion() {
     if (!tag.replace(/\|/g, "")) return;
     if (!versionState.tag) return void (versionState.tag = tag);
     if (tag === versionState.tag) return;
+    // Confirm it isn't one edge server briefly serving a different copy.
+    await new Promise((r) => setTimeout(r, 10000));
+    if ((await currentVersionTag()) !== tag) return;
     const busy = document.querySelector(".modal-backdrop.open") || whState.minimized || ccState.minimized;
     if (!busy) return location.reload();
     if (versionState.barShown) return;
