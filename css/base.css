@@ -1153,6 +1153,7 @@ select.tracker-type-select.tracker-type-slides {
 }
 .sm-tile-cap { font-size: 10.5px; color: var(--text-2); }
 .sm-results-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
+.sm-results-bar[hidden] { display: none; }
 .sm-results-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .sm-results { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; max-height: 32vh; overflow-y: auto; }
 .sm-result { display: flex; align-items: center; gap: 10px; background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 7px 10px; }
