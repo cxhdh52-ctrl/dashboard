@@ -176,7 +176,44 @@ const engagementToggles = { likes: true, saves: true, comments: true };
 
 // ============================== INIT ==============================
 
+// ---- Auto-update: the dashboard tab stays open for days, so it checks for a
+// new deploy every 2 min (and when the tab comes back into view). No work in
+// progress -> reload straight away; otherwise a "Reload" bar.
+const versionState = { tag: null, barShown: false };
+async function currentVersionTag() {
+  const tags = await Promise.all(
+    ["/", "/js/app.js", "/css/base.css"].map((u) =>
+      fetch(u, { method: "HEAD", cache: "no-store" }).then((r) => r.headers.get("etag") || "")
+    )
+  );
+  return tags.join("|");
+}
+async function checkForNewVersion() {
+  try {
+    const tag = await currentVersionTag();
+    if (!tag.replace(/\|/g, "")) return;
+    if (!versionState.tag) return void (versionState.tag = tag);
+    if (tag === versionState.tag) return;
+    const busy = document.querySelector(".modal-backdrop.open") || whState.minimized || ccState.minimized;
+    if (!busy) return location.reload();
+    if (versionState.barShown) return;
+    versionState.barShown = true;
+    const bar = document.createElement("div");
+    bar.className = "update-bar";
+    bar.innerHTML = `New version of the dashboard is ready. <button type="button" class="icon-btn primary">Reload</button>`;
+    bar.querySelector("button").addEventListener("click", () => location.reload());
+    document.body.appendChild(bar);
+  } catch (_) {
+    /* offline — try again next time */
+  }
+}
+
 document.addEventListener("DOMContentLoaded", () => {
+  checkForNewVersion();
+  setInterval(checkForNewVersion, 2 * 60 * 1000);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") checkForNewVersion();
+  });
   updateDateDisplay();
 
   initTheme(() => {

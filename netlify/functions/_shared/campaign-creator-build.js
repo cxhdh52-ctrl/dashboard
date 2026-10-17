@@ -11,7 +11,7 @@
 // only. Video sharing + downloading disabled. No interests/behaviours.
 
 const { mcpCall, deleteCampaign } = require("./tiktok-mcp");
-const { resolveSparkCode, parseLinkedPost } = require("./wh-warmup");
+const { resolveSparkCode, parseLinkedPost, resolveLinkedInput } = require("./wh-warmup");
 
 // ---------------------------------------------------------------------------
 // Enums / constants — TikTok's real values
@@ -936,7 +936,7 @@ async function createOneCampaign({
   }
 
   // A linked-account post skips Spark-code resolution entirely.
-  const linked = parseLinkedPost(sparkCode);
+  const linked = await resolveLinkedInput(client, advId, bcId || advertiser.bc_id, sparkCode);
   const spark = linked
     ? { item_id: linked.item_id, identity_id: linked.identity_id, post_type: linked.post_type }
     : await resolveSparkCode(client, advId, sparkCode); // { item_id, identity_id, post_type }

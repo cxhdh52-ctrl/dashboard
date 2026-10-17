@@ -1224,3 +1224,4 @@ select.tracker-type-select.tracker-type-slides {
 .tk-adv .tk-adv-status + .tk-adv-status { margin-left: 6px; }
 .tk-summary .us-recheck { padding: 2px 10px; font-size: 12px; margin-left: auto; }
 .wh-warming-source b.neg { color: var(--loss); }
+.update-bar { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 9999; display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-radius: 10px; background: var(--bg-2, #13203a); border: 1px solid var(--accent, #4aa3ff); color: var(--text-0, #fff); font-size: 13px; box-shadow: 0 6px 24px rgba(0,0,0,.4); max-width: calc(100vw - 32px); }

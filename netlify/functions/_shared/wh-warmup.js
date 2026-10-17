@@ -301,6 +301,7 @@ async function resolveSparkCode(client, advertiserId, rawCode) {
         `TikTok hasn't enabled Spark-code authorization through the API for ad account ${advertiserId} yet ` +
           `(TikTok says: available around December). Fix: open this ad account in TikTok Ads Manager → ` +
           `Tools → Creatives → Spark Ads posts → Apply for authorization, paste the code there once, then retry here. ` +
+          `If the post is on a TikTok account linked to your Business Center, paste the post's LINK instead of the code. ` +
           `Or link the TikTok account to the Business Center and use "pick a post from linked accounts" (WH / Campaign Creator) instead of using a code.`
       );
     }
@@ -413,6 +414,51 @@ function parseLinkedPost(code) {
   return m ? { identity_id: m[1], item_id: m[2], post_type: m[3] ? "CAROUSEL" : "VIDEO" } : null;
 }
 
+// A TikTok post LINK from an account linked to the Business Center, used in
+// place of a Spark code: https://www.tiktok.com/@user/video/<id> (or /photo/),
+// or a vm./vt.tiktok.com short link (followed to the full URL). The @username
+// is matched to the BC's BC_AUTH_TT identity — no code, no
+// tt_video_authorize_apply. Returns a parseLinkedPost-shaped object or null
+// when the input isn't a TikTok link; throws when it is one but can't be used.
+const TT_URL_RE = /^https?:\/\/([a-z]+\.)?tiktok\.com\//i;
+
+async function resolvePostLink(client, advertiserId, bcId, input) {
+  let url = String(input || "").trim();
+  if (!TT_URL_RE.test(url)) return null;
+  if (!/\/@[^/]+\/(video|photo)\/\d+/.test(url)) {
+    try {
+      const res = await fetch(url, { redirect: "follow", headers: { "User-Agent": "Mozilla/5.0" } });
+      url = res.url || url;
+    } catch (_) {
+      /* fall through to the format error below */
+    }
+  }
+  const m = /\/@([^/?#]+)\/(video|photo)\/(\d{6,25})/.exec(url);
+  if (!m) throw new Error("That TikTok link isn't a post link — copy the post's link (tiktok.com/@user/video/…).");
+  const username = decodeURIComponent(m[1]).toLowerCase();
+  if (!bcId) throw new Error("A post link needs the ad account's Business Center.");
+  const d = await mcpCallThrottled(client, "identity_get", {
+    advertiser_id: String(advertiserId),
+    identity_type: "BC_AUTH_TT",
+    identity_authorized_bc_id: String(bcId),
+    page_size: 100,
+  });
+  const ids = d?.identity_list || d?.list || [];
+  const hit = ids.find((x) => String(x.username || "").toLowerCase() === username);
+  if (!hit) {
+    const linked = ids.map((x) => "@" + x.username).filter((x) => x !== "@undefined").join(", ") || "none";
+    throw new Error(
+      `@${username} isn't linked to this Business Center (linked: ${linked}). Link it in Business Center → Assets → TikTok accounts, or use a Spark code.`
+    );
+  }
+  return { identity_id: String(hit.identity_id), item_id: m[3], post_type: m[2] === "photo" ? "CAROUSEL" : "VIDEO" };
+}
+
+// "linked:<identity>:<item>" from the picker, or a TikTok post link -> linked post; else null.
+async function resolveLinkedInput(client, advertiserId, bcId, input) {
+  return parseLinkedPost(input) || (await resolvePostLink(client, advertiserId, bcId, input));
+}
+
 async function createWarmupForAdvertiser({ client, advertiserId, bcId, currency, targetCountry, locationId, sparkCode, campaignName }) {
   const names = whNames();
   if (campaignName) names.campaign = campaignName; // wh1, wh2, … — see wh-warmup.js createBatch
@@ -424,7 +470,7 @@ async function createWarmupForAdvertiser({ client, advertiserId, bcId, currency,
   const loc = locationId
     ? { location_id: String(locationId), name: String(targetCountry || locationId) }
     : await resolveCountryLocationId(client, advertiserId, targetCountry);
-  const linked = parseLinkedPost(sparkCode);
+  const linked = await resolveLinkedInput(client, advertiserId, bcId, sparkCode);
   if (linked && !bcId) throw new Error("A linked-account post needs the ad account's Business Center id.");
   const spark = linked || (await resolveSparkCode(client, advertiserId, sparkCode));
 
@@ -736,6 +782,7 @@ module.exports = {
   resolveCountryLocationId,
   resolveSparkCode,
   parseLinkedPost,
+  resolveLinkedInput,
   createWarmupForAdvertiser,
   cleanupOneWarmup,
   CLEANUP_ATTEMPT_CAP,

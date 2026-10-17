@@ -563,8 +563,8 @@
         <div class="wh-kv"><span>Ad name</span><strong>AD#### <em>(random)</em></strong></div>
         <div class="wh-kv"><span>Type</span><strong>Spark Ad</strong></div>
         <div class="wh-kv"><span>CTA</span><strong>Learn More</strong></div>
-        <label class="budget-field-label" for="whSparkInput">Spark Code <span class="eng-hint">(same code for every account)</span></label>
-        <input type="text" id="whSparkInput" placeholder="Paste the creator's Spark authorization code" autocomplete="off" />
+        <label class="budget-field-label" for="whSparkInput">Spark Code or post link <span class="eng-hint">(same for every account — a link works for posts on a TikTok account linked to the BC, no code needed)</span></label>
+        <input type="text" id="whSparkInput" placeholder="Spark code, or tiktok.com/@user/video/… link" autocomplete="off" />
         <button type="button" class="icon-btn" id="whLinkedBtn">…or pick a post from linked accounts (no code)</button>
         <div id="whLinkedPicker" class="cc-linked" hidden></div>
       </div>
@@ -848,7 +848,7 @@
 
       <!-- Step 4 — Spark codes + post links -->
       <div class="cc-step" id="ccRunStep4" hidden>
-        <label class="budget-field-label" for="ccRunSpark">Spark codes <span class="eng-hint">(one per line — order matches the accounts)</span></label>
+        <label class="budget-field-label" for="ccRunSpark">Spark codes <span class="eng-hint">(one per line — order matches the accounts; a tiktok.com/@user/video/… link works for posts on a BC-linked account)</span></label>
         <button type="button" class="icon-btn" id="ccRunLinkedBtn">Pick from linked accounts</button>
         <div id="ccRunLinkedPicker" class="cc-linked" hidden></div>
         <textarea id="ccRunSpark" rows="5" placeholder="code for account 1&#10;code for account 2&#10;…"></textarea>
