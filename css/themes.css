@@ -236,7 +236,6 @@
 }
 [data-theme="kuzan"] .card::after,
 [data-theme="kuzan"] .kpi-card::after,
-[data-theme="kuzan"] .modal::after,
 [data-theme="kuzan"] .tools-drawer::after {
   content: "";
   position: absolute;
@@ -267,7 +266,9 @@
 [data-theme="kuzan"] .kpi-card:nth-of-type(4)::after { --edge-angle: 300deg; animation-delay: -24s; }
 [data-theme="kuzan"] .chart-section::after { --edge-angle: 60deg; }
 [data-theme="kuzan"] .table-section::after { --edge-angle: 220deg; }
-[data-theme="kuzan"] .modal::after { --edge-angle: 130deg; animation-duration: 32s; }
+/* Modals scroll, and an absolutely-positioned ring scrolls with the content
+   (its bottom edge cut across the form). They get a static glow edge instead. */
+[data-theme="kuzan"] .modal { box-shadow: var(--shadow), 0 0 0 1px rgba(103, 232, 249, 0.35), 0 0 26px rgba(83, 157, 222, 0.3); }
 [data-theme="kuzan"] .tools-drawer::after { --edge-angle: 40deg; animation-duration: 36s; }
 
 @keyframes kuzanEdgeSweep { to { --edge-angle: 360deg; } }
