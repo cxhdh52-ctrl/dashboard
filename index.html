@@ -385,6 +385,11 @@
           <label class="sm-label">Hook slides <span class="eng-hint">— the angle goes on these; each one makes its own slideshow</span></label>
           <label class="icon-btn sm-file-btn">+ Add hook slides<input type="file" id="smHookInput" accept="image/*" multiple data-sm-lock hidden /></label>
           <div class="sm-chips" id="smHookList"></div>
+          <div class="sm-similar">
+            <input type="text" id="smSimilarUrl" placeholder="Find similar: paste an image link" autocomplete="off" />
+            <button type="button" class="icon-btn" id="smSimilarBtn">🔍 Find similar</button>
+          </div>
+          <span class="eng-hint sm-similar-hint">Opens Google Lens in a new tab. Or click 🔍 on a hook slide above: the image is copied, then press ⌘V on the Lens page.</span>
           <label class="sm-label">Checkout slide <span class="eng-hint">— slide 2</span></label>
           <label class="icon-btn sm-file-btn">+ Add checkout image<input type="file" id="smCheckoutInput" accept="image/*" data-sm-lock hidden /></label>
           <div class="sm-chips" id="smCheckoutList"></div>

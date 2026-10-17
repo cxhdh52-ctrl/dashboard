@@ -411,7 +411,9 @@ function renderFileLists() {
     items
       .map(
         (it, i) =>
-          `<span class="sm-chip" title="${escapeAttr(it.name)}">${kind === "clips" ? "Clip" : kind === "hooks" ? "Hook" : "Slide"} ${i + 1} · ${escapeHtml(shortName(it.name))}<button type="button" data-sm-remove="${kind}:${i}" aria-label="Remove">✕</button></span>`,
+          `<span class="sm-chip" title="${escapeAttr(it.name)}">${kind === "clips" ? "Clip" : kind === "hooks" ? "Hook" : "Slide"} ${i + 1} · ${escapeHtml(shortName(it.name))}${
+            kind === "hooks" ? `<button type="button" data-sm-similar="${i}" title="Find similar images (Google Lens)" aria-label="Find similar">🔍</button>` : ""
+          }<button type="button" data-sm-remove="${kind}:${i}" aria-label="Remove">✕</button></span>`,
       )
       .join("");
   $("smClipList").innerHTML = chips(sm.clips, "clips");
@@ -990,6 +992,38 @@ function aiAction(act) {
   renderAi();
 }
 
+// ---------------------------------------------------------------- find similar
+
+// Opens Google Lens for you to browse. A link goes straight in; a local
+// hook slide is copied to the clipboard first (Lens accepts ⌘V / Ctrl+V).
+const LENS_URL = "https://lens.google.com/";
+const LENS_BY_URL = "https://lens.google.com/uploadbyurl?url=";
+
+function findSimilarByUrl() {
+  const url = $("smSimilarUrl").value.trim();
+  if (!/^https?:\/\/\S+$/i.test(url)) {
+    setStatus("Paste a full image link (starting with https://).", "bad");
+    return;
+  }
+  setStatus("");
+  window.open(LENS_BY_URL + encodeURIComponent(url), "_blank", "noopener");
+}
+
+async function findSimilarByFile(i) {
+  const entry = sm.hooks[i];
+  if (!entry) return;
+  try {
+    const c = makeCanvas(entry.sw, entry.sh);
+    c.getContext("2d").drawImage(entry.img, 0, 0);
+    const png = new Promise((resolve, reject) => c.toBlob((b) => (b ? resolve(b) : reject(new Error("export failed"))), "image/png"));
+    await navigator.clipboard.write([new ClipboardItem({ "image/png": png })]);
+    setStatus("Image copied. Press ⌘V (Ctrl+V) on the Google Lens page.", "ok");
+  } catch (err) {
+    setStatus("Couldn't copy the image. Drag the file onto the Google Lens page instead.", "bad");
+  }
+  window.open(LENS_URL, "_blank", "noopener");
+}
+
 // ---------------------------------------------------------------- tabs / open
 
 function applyTab(tab) {
@@ -1028,6 +1062,10 @@ export function initSparkMaker({ onOpen, askPassword: ask } = {}) {
   askPassword = ask || null;
   restoreSettings();
   $("smAiBtn").addEventListener("click", aiGenerate);
+  $("smSimilarBtn").addEventListener("click", findSimilarByUrl);
+  $("smSimilarUrl").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") findSimilarByUrl();
+  });
   $("smAiOut").addEventListener("change", (e) => {
     const cb = e.target.closest("[data-sm-ai]");
     if (!cb || !sm.ai.items) return;
@@ -1066,6 +1104,8 @@ export function initSparkMaker({ onOpen, askPassword: ask } = {}) {
   $("sparkMakerModal").addEventListener("click", (e) => {
     const rm = e.target.closest("[data-sm-remove]");
     if (rm && !sm.busy) removeFile(rm.dataset.smRemove);
+    const sim = e.target.closest("[data-sm-similar]");
+    if (sim) findSimilarByFile(Number(sim.dataset.smSimilar));
     const dl = e.target.closest("[data-sm-dl]");
     if (dl) downloadGroup(Number(dl.dataset.smDl));
   });
