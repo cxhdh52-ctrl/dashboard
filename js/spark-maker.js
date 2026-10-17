@@ -17,13 +17,17 @@ const SAFE_TOP = 200, SAFE_BOTTOM = 1440, SIDE_MARGIN = 130;
 const PRESET_TOP = 250;                         // "top": block starts here
 const PRESET_CENTER = { upper: 0.32, middle: 0.45 }; // block centre, fraction of H
 const THUMB_W = 270, THUMB_H = 480;
-const FONT_STACK = '"TikTok Sans", "Helvetica Neue", Arial, sans-serif';
+// TikTok's in-app text font (TikTok Sans SemiBold — the "Classic" style),
+// self-hosted and loaded through FontFace so the canvas never falls back.
+const FONT_URL = "/assets/fonts/tiktok-sans-600.woff2";
+const FONT_FAMILY = "TikTok Sans Spark";
+const FONT_STACK = `"${FONT_FAMILY}", "TikTok Sans", "Helvetica Neue", Arial, sans-serif`;
+let fontPromise = null;
 
 const sm = {
   tab: "videos",
   clips: [],     // { file, name, thumb, pos }
   hooks: [],     // { file, name, img, sw, sh, thumb, pos }
-  middles: [],   // { file, name, img, sw, sh }
   checkout: null,
   results: [],   // { name, blob, group, angle, source }
   busy: false,
@@ -87,7 +91,21 @@ function makeCanvas(w, h) {
 }
 
 function fontFor(size) {
-  return `800 ${size}px ${FONT_STACK}`;
+  return `600 ${size}px ${FONT_STACK}`;
+}
+
+function loadFont() {
+  if (!fontPromise) {
+    const face = new FontFace(FONT_FAMILY, `url(${FONT_URL}) format("woff2")`, { weight: "600" });
+    fontPromise = face
+      .load()
+      .then((f) => document.fonts.add(f))
+      .catch((err) => {
+        fontPromise = null;
+        console.warn("[spark-maker] font load failed", err);
+      });
+  }
+  return fontPromise;
 }
 
 // Greedy word wrap by measured width. "|" forces a line break.
@@ -320,7 +338,6 @@ function renderFileLists() {
       .join("");
   $("smClipList").innerHTML = chips(sm.clips, "clips");
   $("smHookList").innerHTML = chips(sm.hooks, "hooks");
-  $("smMiddleList").innerHTML = chips(sm.middles, "middles");
   $("smCheckoutList").innerHTML = sm.checkout
     ? `<span class="sm-chip">${escapeHtml(shortName(sm.checkout.name))}<button type="button" data-sm-remove="checkout:0" aria-label="Remove">✕</button></span>`
     : "";
@@ -459,7 +476,7 @@ function updateSummary() {
       sm.clips.length * n
     } spark${sm.clips.length * n === 1 ? "" : "s"}`;
   } else {
-    const per = 1 + sm.middles.length + (sm.checkout ? 1 : 0);
+    const per = 1 + (sm.checkout ? 1 : 0);
     text = `${sm.hooks.length} hook slide${sm.hooks.length === 1 ? "" : "s"} × ${n} angle${n === 1 ? "" : "s"} = ${
       sm.hooks.length * n
     } slideshow${sm.hooks.length * n === 1 ? "" : "s"} (${per} image${per === 1 ? "" : "s"} each)`;
@@ -553,7 +570,7 @@ async function generate() {
   sm.cancelled = false;
   setBusy(true);
   try {
-    if (document.fonts) await document.fonts.load(fontFor(60)).catch(() => {});
+    await loadFont();
     if (sm.tab === "videos") await generateVideos(angles, opts);
     else await generateSlides(angles, opts);
     if (sm.cancelled) setStatus(`Stopped — ${sm.results.length} finished file(s) kept below.`, "warn");
@@ -613,10 +630,8 @@ function eta(t0, done, total) {
 
 async function generateSlides(angles, opts) {
   const checkoutText = $("smCheckoutText").value.trim();
-  // Shared slides are identical in every set — render them once.
-  setStatus("Rendering shared slides…", "busy");
-  const middles = [];
-  for (const m of sm.middles) middles.push(await renderSlide(m, "", opts, null));
+  // The checkout slide is identical in every set — render it once.
+  setStatus("Rendering checkout slide…", "busy");
   const checkout = sm.checkout ? await renderSlide(sm.checkout, checkoutText, opts, sm.checkout.pos) : null;
 
   const total = sm.hooks.length * angles.length;
@@ -626,8 +641,8 @@ async function generateSlides(angles, opts) {
       if (sm.cancelled) return;
       setStatus(`Rendering slideshow ${done + 1}/${total}…`, "busy");
       const group = `h${i + 1}_a${j + 1}_${slug(angles[j])}`;
-      const files = [await renderSlide(sm.hooks[i], angles[j], opts, sm.hooks[i].pos), ...middles];
-      const sources = [sm.hooks[i].name, ...sm.middles.map((m) => m.name)];
+      const files = [await renderSlide(sm.hooks[i], angles[j], opts, sm.hooks[i].pos)];
+      const sources = [sm.hooks[i].name];
       if (checkout) {
         files.push(checkout);
         sources.push(sm.checkout.name);
@@ -806,7 +821,7 @@ function open() {
   renderPreview();
   renderResults();
   // Warm the font + video engine while the user picks files.
-  if (document.fonts) document.fonts.load(fontFor(60)).then(() => redrawAllTiles()).catch(() => {});
+  loadFont().then(() => redrawAllTiles());
   loadMediabunny().catch(() => {});
 }
 
@@ -844,7 +859,6 @@ export function initSparkMaker({ onOpen } = {}) {
   for (const [inputId, kind] of [
     ["smClipInput", "clips"],
     ["smHookInput", "hooks"],
-    ["smMiddleInput", "middles"],
     ["smCheckoutInput", "checkout"],
   ]) {
     $(inputId).addEventListener("change", async (e) => {
