@@ -1989,9 +1989,19 @@ function whWarmingByAdv(connId = whState.connectionId) {
 // US is targetable on that ad account (TikTok unlocks it per account — an EU
 // account sometimes still has no US after warming up).
 const US_STALE_MS = 6 * 3600 * 1000;
+const GEO_KEY = "kx.geo";
+// Geos offered in the account lists' picker (ISO codes, as TikTok returns them).
+const GEOS = ["US", "GB", "CA", "AU", "NZ", "IE", "DE", "FR", "ES", "IT", "NL", "BE", "AT", "CH", "SE", "NO", "DK", "FI", "PL", "PT", "BR", "MX", "JP", "KR", "SA", "AE"];
 const acctState = {
+  geo: (() => {
+    try {
+      return localStorage.getItem(GEO_KEY) || "US";
+    } catch (_) {
+      return "US";
+    }
+  })(),
   wh: new Map(), // connection_id -> { campaigns, warmed: Map(advertiser_id -> became_active_at) }
-  us: {}, // advertiser_id -> { us, checked_at }
+  us: {}, // advertiser_id -> { us, countries: [codes], checked_at }
   usLoaded: false,
   checking: new Set(), // advertiser_ids being re-checked right now
   rerender: new Set(), // render fns of the lists currently open
@@ -2022,7 +2032,25 @@ function acctRerender() {
   for (const fn of acctState.rerender) fn();
 }
 
-// Tags for one account row: warming/warmed + US.
+// Is the selected geo targetable on this account? true / false / null (not
+// checked yet — or an old US-only result when another geo is selected).
+function geoAvailable(id, geo = acctState.geo) {
+  const e = acctState.us[id];
+  if (!e) return null;
+  if (geo === "US" && typeof e.us === "boolean") return e.us;
+  if (Array.isArray(e.countries)) return e.countries.includes(geo);
+  return null;
+}
+
+function setAcctGeo(geo) {
+  acctState.geo = geo;
+  try {
+    localStorage.setItem(GEO_KEY, geo);
+  } catch (_) {}
+  acctRerender();
+}
+
+// Tags for one account row: warming/warmed + geo availability.
 function acctTagsHtml(connId, id) {
   const tags = [];
   const warming = whWarmingByAdv(connId).get(id);
@@ -2032,29 +2060,33 @@ function acctTagsHtml(connId, id) {
   } else if (warmedAt) {
     tags.push(`<span class="tk-adv-status ok" title="WH reached Active ${escapeHtml(new Date(warmedAt).toLocaleString())}">Warmed up</span>`);
   }
-  const us = acctState.us[id];
+  const geo = acctState.geo;
+  const avail = geoAvailable(id);
   if (acctState.checking.has(id)) {
-    tags.push(`<span class="tk-adv-status us-tag" title="Checking US availability…">US …</span>`);
-  } else if (us) {
-    const when = new Date(us.checked_at).toLocaleString();
+    tags.push(`<span class="tk-adv-status us-tag" title="Checking ${geo} availability…">${geo} …</span>`);
+  } else if (avail !== null) {
+    const when = new Date(acctState.us[id].checked_at).toLocaleString();
     tags.push(
-      us.us
-        ? `<span class="tk-adv-status ok us-tag" title="US is targetable on this ad account (checked ${escapeHtml(when)})">US ✓</span>`
-        : `<span class="tk-adv-status warn us-tag" title="US is NOT targetable on this ad account yet (checked ${escapeHtml(when)})">No US</span>`
+      avail
+        ? `<span class="tk-adv-status ok us-tag" title="${geo} is targetable on this ad account (checked ${escapeHtml(when)})">${geo} ✓</span>`
+        : `<span class="tk-adv-status warn us-tag" title="${geo} is NOT targetable on this ad account yet (checked ${escapeHtml(when)})">No ${geo}</span>`
     );
   }
   return tags.join("");
 }
 
-// Summary chips for a list: "US ✓ n · No US n" + a recheck button.
+// Summary chips for a list: geo picker + "US ✓ n · No US n" + a recheck button.
 function acctUsSummaryHtml(advs, listKey) {
+  const geo = acctState.geo;
   const approved = advs.filter((a) => advIsApproved(a));
-  const yes = approved.filter((a) => acctState.us[String(a.advertiser_id)]?.us === true).length;
-  const no = approved.filter((a) => acctState.us[String(a.advertiser_id)]?.us === false).length;
+  const yes = approved.filter((a) => geoAvailable(String(a.advertiser_id)) === true).length;
+  const no = approved.filter((a) => geoAvailable(String(a.advertiser_id)) === false).length;
   const busy = approved.some((a) => acctState.checking.has(String(a.advertiser_id)));
-  return `<span class="tk-sum-item ok"><strong>${yes}</strong> US ✓</span>
-    <span class="tk-sum-item warn"><strong>${no}</strong> No US</span>
-    <button type="button" class="icon-btn us-recheck" data-us-recheck="${listKey}" ${busy ? "disabled" : ""}>${busy ? "Checking US…" : "Recheck US"}</button>`;
+  const opts = (GEOS.includes(geo) ? GEOS : [geo, ...GEOS]).map((g) => `<option value="${g}" ${g === geo ? "selected" : ""}>${g}</option>`).join("");
+  return `<label class="geo-pick" title="Which country to show availability for">Geo <select data-geo-select="${listKey}">${opts}</select></label>
+    <span class="tk-sum-item ok"><strong>${yes}</strong> ${geo} ✓</span>
+    <span class="tk-sum-item warn"><strong>${no}</strong> No ${geo}</span>
+    <button type="button" class="icon-btn us-recheck" data-us-recheck="${listKey}" ${busy ? "disabled" : ""}>${busy ? `Checking ${geo}…` : `Recheck ${geo}`}</button>`;
 }
 
 // Loads the cached US map, then re-checks (in small sequential chunks) every
@@ -2075,7 +2107,12 @@ async function ensureUsChecked(connId, advs, force = false) {
     .filter((a) => advIsApproved(a))
     .map((a) => String(a.advertiser_id))
     .filter((id) => !acctState.checking.has(id))
-    .filter((id) => force || !acctState.us[id] || now - new Date(acctState.us[id].checked_at).getTime() > US_STALE_MS);
+    .filter(
+      (id) =>
+        force ||
+        geoAvailable(id) === null ||
+        now - new Date(acctState.us[id].checked_at).getTime() > US_STALE_MS
+    );
   if (!connId || !ids.length) return;
   ids.forEach((id) => acctState.checking.add(id));
   acctRerender();
@@ -2829,6 +2866,14 @@ function wireCampaignCreatorEvents() {
   });
   acctState.rerender.add(() => {
     if (document.getElementById("campaignCreatorModal").classList.contains("open") && !document.getElementById("ccRunStep1").hidden) renderCcRunAdvertisers();
+  });
+  document.addEventListener("change", (e) => {
+    const sel = e.target.closest("[data-geo-select]");
+    if (!sel) return;
+    setAcctGeo(sel.value);
+    // Old results only knew "US or not" — re-check those for the new geo.
+    if (sel.dataset.geoSelect === "wh") ensureUsChecked(whState.connectionId, whAdvsForConnection());
+    else ensureUsChecked(ccState.run.connectionId, ccRunAdvs());
   });
   document.addEventListener("click", (e) => {
     const b = e.target.closest("[data-us-recheck]");

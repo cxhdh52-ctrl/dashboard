@@ -93,6 +93,7 @@ const TOOLS = [
       type: "object",
       properties: {
         offer: { type: "string" },
+        geo: { type: "string", description: "Country code, e.g. US" },
         verdict: { type: "string", enum: ["any", "winner", "break_even", "dead", "testing", "untested"] },
         limit: { type: "integer", description: "Default 25" },
       },
@@ -110,11 +111,12 @@ const TOOLS = [
   {
     name: "accounts",
     description:
-      "Ad accounts: name, BC, TikTok status (active/limited/suspended), whether it is warmed up (a WH reached Active), whether US targeting is available, and whether it has a live campaign.",
+      "Ad accounts: name, BC, TikTok status (active/limited/suspended), whether it is warmed up (a WH reached Active), whether the chosen geo (default US) is targetable, and whether it has a live campaign.",
     input_schema: {
       type: "object",
       properties: {
-        filter: { type: "string", enum: ["all", "warmed", "not_warmed", "us_available", "suspended"], description: "Default all" },
+        filter: { type: "string", enum: ["all", "warmed", "not_warmed", "geo_available", "suspended"], description: "Default all" },
+        geo: { type: "string", description: "Country code to check availability for. Default US." },
       },
     },
   },
@@ -219,12 +221,13 @@ async function toolAngles(supabase, input) {
   const lib = await listLibrary(supabase);
   let angles = lib.angles.filter((a) => a.status !== "archived");
   if (input.offer) angles = angles.filter((a) => String(a.offer || "").toLowerCase() === String(input.offer).toLowerCase());
+  if (input.geo) angles = angles.filter((a) => !a.geo || a.geo === String(input.geo).toUpperCase());
   if (input.verdict && input.verdict !== "any") angles = angles.filter((a) => a.verdict === input.verdict);
   angles.sort((a, b) => (b.stats?.spend || 0) - (a.stats?.spend || 0));
   const limit = Math.max(1, Math.min(60, Number(input.limit) || 25));
   return {
     total: angles.length,
-    angles: angles.slice(0, limit).map((a) => ({ text: a.text, offer: a.offer || undefined, verdict: a.verdict, ...(a.stats || {}) })),
+    angles: angles.slice(0, limit).map((a) => ({ text: a.text, offer: a.offer || undefined, geo: a.geo || undefined, verdict: a.verdict, ...(a.stats || {}) })),
   };
 }
 
@@ -271,6 +274,12 @@ async function toolAccounts(supabase, input) {
     q(supabase.from("tiktok_campaigns").select("advertiser_id, campaign_operation_status, hidden").eq("hidden", false)),
   ]);
   const warmed = new Set(wh.rows.map((r) => r.advertiser_id));
+  const geo = String(input.geo || "US").toUpperCase();
+  const geoAvail = (e) => {
+    if (!e) return "unknown";
+    if (geo === "US" && typeof e.us === "boolean") return e.us;
+    return Array.isArray(e.countries) ? e.countries.includes(geo) : "unknown";
+  };
   const usMap = (us.rows[0] && us.rows[0].value) || {};
   const live = new Set(camps.rows.filter((c) => String(c.campaign_operation_status).toUpperCase() === "ENABLE").map((c) => c.advertiser_id));
   let rows = advs.rows.map((a) => ({
@@ -280,20 +289,21 @@ async function toolAccounts(supabase, input) {
     tiktok_status: a.status,
     suspended: /LIMIT|DISABLE|PUNISH|DELETE/i.test(String(a.status || "")),
     warmed_up: warmed.has(a.advertiser_id),
-    us_available: usMap[a.advertiser_id] ? !!usMap[a.advertiser_id].us : "unknown",
+    geo_available: geoAvail(usMap[a.advertiser_id]),
     has_live_campaign: live.has(a.advertiser_id),
   }));
   const f = input.filter || "all";
   if (f === "warmed") rows = rows.filter((r) => r.warmed_up);
   if (f === "not_warmed") rows = rows.filter((r) => !r.warmed_up && !r.suspended);
-  if (f === "us_available") rows = rows.filter((r) => r.us_available === true);
+  if (f === "geo_available" || f === "us_available") rows = rows.filter((r) => r.geo_available === true);
   if (f === "suspended") rows = rows.filter((r) => r.suspended);
   return {
     count: rows.length,
     summary: {
       total: advs.rows.length,
       warmed: rows.filter((r) => r.warmed_up).length,
-      us_available: rows.filter((r) => r.us_available === true).length,
+      geo,
+      geo_available: rows.filter((r) => r.geo_available === true).length,
       suspended: rows.filter((r) => r.suspended).length,
     },
     accounts: rows.slice(0, 120),

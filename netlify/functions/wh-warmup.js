@@ -116,7 +116,9 @@ async function countriesFor(supabase, body) {
 // BC account often only gets it after warming up — and sometimes not even
 // then), so the account pickers show it. One tool_region_get per account;
 // results are cached in app_settings (key "us_availability"):
-//   { [advertiser_id]: { us: true|false, checked_at } }
+//   { [advertiser_id]: { us: true|false, countries: ["US","GB",…], checked_at } }
+// `countries` (ISO codes, or the name when TikTok gives no code) lets the
+// account lists show availability for any geo, not just the US.
 // ---------------------------------------------------------------------------
 
 const US_KEY = "us_availability";
@@ -152,7 +154,13 @@ async function usCheck(supabase, body) {
       if (Date.now() > deadline) break;
       try {
         const list = await listCountryRegions(client, advId);
-        if (list.length) found[advId] = { us: list.some(isUs), checked_at: new Date().toISOString() };
+        if (list.length) {
+          found[advId] = {
+            us: list.some(isUs),
+            countries: [...new Set(list.map((c) => (c.code || c.name).toUpperCase()))],
+            checked_at: new Date().toISOString(),
+          };
+        }
       } catch (err) {
         errors[advId] = err.message;
       }

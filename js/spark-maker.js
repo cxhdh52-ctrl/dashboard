@@ -45,6 +45,16 @@ const loadJsZip = () => (zipPromise ||= import(JSZIP_URL).then((m) => m.default 
 
 const $ = (id) => document.getElementById(id);
 
+// The geo picked in the WH Warmup / Campaign Creator account lists (app.js,
+// localStorage "kx.geo"). Angles made here are tagged with it.
+function currentGeo() {
+  try {
+    return localStorage.getItem("kx.geo") || "US";
+  } catch (_) {
+    return "US";
+  }
+}
+
 // ---------------------------------------------------------------- settings
 
 function readOpts() {
@@ -637,7 +647,7 @@ function registerAngles(angles) {
   fetch(LIBRARY_ENDPOINT, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action: "add_angles", texts: angles, source: "spark_maker" }),
+    body: JSON.stringify({ action: "add_angles", texts: angles, source: "spark_maker", geo: currentGeo() }),
   }).catch(() => {});
 }
 
@@ -934,7 +944,7 @@ function renderAi() {
 // kept ones are also saved to the Creative Library server-side.
 function aiFeedback(kept, dropped) {
   if (!kept.length && !dropped.length) return Promise.resolve();
-  return libraryCall("feedback", { angle_id: null, kept, dropped }).catch(() => {});
+  return libraryCall("feedback", { angle_id: null, kept, dropped, geo: currentGeo() }).catch(() => {});
 }
 
 async function aiGenerate() {
@@ -956,6 +966,7 @@ async function aiGenerate() {
     const data = await libraryCall("variations", {
       password: aiPassword,
       seed_texts: angleList(),
+      geo: currentGeo(),
       count: Number($("smAiCount").value) || 8,
       guidance: $("smAiGuidance").value.trim(),
     });

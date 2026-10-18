@@ -21,6 +21,7 @@ const lib = {
   aiConfigured: false,
   loaded: false,
   offerFilter: "all",
+  geoFilter: "all",
   sort: "profit",
   showArchived: false,
   untaggedOnly: true,
@@ -54,8 +55,8 @@ async function call(action, payload = {}) {
 }
 
 // Exported for other tools (Spark Maker, Campaign Creator).
-export async function addLibraryAngles(texts, { source = "manual", offer = null, parentId = null } = {}) {
-  return call("add_angles", { texts, source, offer, parent_id: parentId });
+export async function addLibraryAngles(texts, { source = "manual", offer = null, geo = null, parentId = null } = {}) {
+  return call("add_angles", { texts, source, offer, geo, parent_id: parentId });
 }
 
 export async function listLibraryAngles() {
@@ -113,9 +114,14 @@ function offers() {
   return [...new Set(lib.angles.map((a) => a.offer).filter(Boolean))].sort();
 }
 
+function geos() {
+  return [...new Set(lib.angles.map((a) => a.geo).filter(Boolean))].sort();
+}
+
 function visibleAngles() {
   let list = lib.angles.filter((a) => lib.showArchived || a.status !== "archived");
   if (lib.offerFilter !== "all") list = list.filter((a) => a.offer === lib.offerFilter);
+  if (lib.geoFilter !== "all") list = list.filter((a) => a.geo === lib.geoFilter);
   const by = {
     profit: (a, b) => b.stats.profit - a.stats.profit || b.stats.spend - a.stats.spend,
     roas: (a, b) => b.stats.roas - a.stats.roas || b.stats.spend - a.stats.spend,
@@ -129,8 +135,15 @@ function renderAngles() {
   const offerBtns = ["all", ...offers()]
     .map((o) => `<button type="button" class="tracker-filter-btn ${lib.offerFilter === o ? "active" : ""}" data-cl-offer="${escapeHtml(o)}">${o === "all" ? "All" : escapeHtml(o)}</button>`)
     .join("");
-  $("clOfferFilter").innerHTML = offerBtns;
-  $("clOfferFilter").hidden = offers().length === 0;
+  const geoList = geos();
+  const geoBtns = geoList.length
+    ? `<span class="cl-filter-sep"></span>` +
+      ["all", ...geoList]
+        .map((g) => `<button type="button" class="tracker-filter-btn ${lib.geoFilter === g ? "active" : ""}" data-cl-geo="${escapeHtml(g)}">${g === "all" ? "All geos" : escapeHtml(g)}</button>`)
+        .join("")
+    : "";
+  $("clOfferFilter").innerHTML = offerBtns + geoBtns;
+  $("clOfferFilter").hidden = offers().length === 0 && geoList.length === 0;
 
   const list = visibleAngles();
   const totals = list.reduce(
@@ -162,7 +175,7 @@ function renderAngles() {
           <span class="status-badge ${tone}">${label}</span>
           <div class="cl-angle-body">
             <div class="cl-angle-text">${escapeHtml(a.text)}</div>
-            <div class="cl-angle-meta">${a.offer ? `<span class="cl-offer">${escapeHtml(a.offer)}</span>` : ""}${
+            <div class="cl-angle-meta">${a.offer ? `<span class="cl-offer">${escapeHtml(a.offer)}</span>` : ""}${a.geo ? `<span class="cl-offer">${escapeHtml(a.geo)}</span>` : ""}${
               parent ? `<span>variation of “${escapeHtml(parent.text.slice(0, 50))}${parent.text.length > 50 ? "…" : ""}”</span>` : ""
             }${nums}</div>
           </div>
@@ -241,7 +254,7 @@ async function generateVariations(angleId) {
 
 async function recordFeedback(angleId, kept, dropped) {
   const angle = lib.angles.find((a) => a.id === angleId);
-  return call("feedback", { angle_id: angleId, kept, dropped, offer: angle ? angle.offer : null });
+  return call("feedback", { angle_id: angleId, kept, dropped, offer: angle ? angle.offer : null, geo: angle ? angle.geo : null });
 }
 
 async function saveVariations(angleId, thenSpark) {
@@ -292,6 +305,7 @@ function startEdit(row, angle) {
   body.innerHTML = `<div class="cl-edit">
     <input type="text" class="cl-edit-text" value="${escapeHtml(angle.text)}" />
     <input type="text" class="cl-edit-offer" value="${escapeHtml(angle.offer || "")}" placeholder="Offer (e.g. CPI)" />
+    <input type="text" class="cl-edit-geo" value="${escapeHtml(angle.geo || "")}" placeholder="Geo (e.g. US)" maxlength="2" />
     <button type="button" class="icon-btn primary" data-cl-edit="save">Save</button>
     <button type="button" class="icon-btn" data-cl-edit="cancel">Cancel</button>
   </div>`;
@@ -311,7 +325,10 @@ async function addAngleFromInput() {
   const texts = $("clNewAngle").value.split("\n").map((s) => s.trim()).filter(Boolean);
   if (!texts.length) return;
   try {
-    const { angles } = await addLibraryAngles(texts, { offer: $("clNewOffer").value.trim() || null });
+    const { angles } = await addLibraryAngles(texts, {
+      offer: $("clNewOffer").value.trim() || null,
+      geo: $("clNewGeo").value.trim() || null,
+    });
     $("clNewAngle").value = "";
     setMsg(angles.length ? `Added ${angles.length} angle${angles.length === 1 ? "" : "s"}.` : "Already in the library.", angles.length ? "ok" : "warn");
     await load();
@@ -418,6 +435,11 @@ export function initCreativeLibrary({ onOpen, askPassword, openSparkMaker } = {}
     render();
   });
   $("clOfferFilter").addEventListener("click", (e) => {
+    const g = e.target.closest("[data-cl-geo]");
+    if (g) {
+      lib.geoFilter = g.dataset.clGeo;
+      return renderAngles();
+    }
     const b = e.target.closest("[data-cl-offer]");
     if (!b) return;
     lib.offerFilter = b.dataset.clOffer;
@@ -446,6 +468,7 @@ export function initCreativeLibrary({ onOpen, askPassword, openSparkMaker } = {}
       return patchAngle(row.dataset.angle, {
         text: row.querySelector(".cl-edit-text").value,
         offer: row.querySelector(".cl-edit-offer").value,
+        geo: row.querySelector(".cl-edit-geo").value,
       });
     }
     const btn = e.target.closest("[data-cl-act]");

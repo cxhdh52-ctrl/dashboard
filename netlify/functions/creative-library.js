@@ -33,7 +33,7 @@ const {
 const { fetchGlitchy } = require("./_shared/glitchy-daily");
 const { fetchMabacSubIdReport } = require("./_shared/mabac");
 
-const ANGLE_COLS = "id, text, offer, status, parent_id, source, notes, created_at, updated_at";
+const ANGLE_COLS = "id, text, offer, geo, status, parent_id, source, notes, created_at, updated_at";
 const MAX_LOOKBACK_DAYS = 30;
 const CLAUDE_MODEL = process.env.CLAUDE_MODEL || "claude-opus-5-5";
 
@@ -64,6 +64,11 @@ function verdictFor(stats) {
   if (stats.roas < 0.8) return "dead";
   if (stats.roas < 1.5) return "break_even";
   return "winner";
+}
+
+function cleanGeo(v) {
+  const s = String(v || "").trim().toUpperCase();
+  return /^[A-Z]{2}$/.test(s) ? s : null;
 }
 
 function cleanOffer(v) {
@@ -231,6 +236,7 @@ async function addAngles(supabase, body) {
     .map((text) => ({
       text,
       offer: cleanOffer(body.offer),
+      geo: cleanGeo(body.geo),
       source: ["manual", "variation", "spark_maker"].includes(body.source) ? body.source : "manual",
       parent_id: body.parent_id || null,
       created_at: now,
@@ -260,6 +266,7 @@ async function updateAngle(supabase, body) {
     patch.text = t;
   }
   if ("offer" in p) patch.offer = cleanOffer(p.offer);
+  if ("geo" in p) patch.geo = cleanGeo(p.geo);
   if ("status" in p) patch.status = p.status === "archived" ? "archived" : "active";
   if ("notes" in p) patch.notes = p.notes == null ? null : String(p.notes).slice(0, 2000);
   const { data, error } = await supabase.from("creative_angles").update(patch).eq("id", body.id).select(ANGLE_COLS).maybeSingle();
@@ -457,9 +464,13 @@ async function makeVariations(supabase, body) {
     if (!source) return json(404, { error: "Angle not found" });
   }
   const offer = source ? source.offer : body.offer || null;
+  const geo = source ? source.geo : cleanGeo(body.geo);
   const seedSet = new Set(seeds.map((t) => t.toLowerCase()));
 
-  const sameOffer = lib.angles.filter((a) => a.status !== "archived" && (!offer || !a.offer || a.offer === offer));
+  // Same offer + geo (an angle with no offer/geo set matches any).
+  const sameOffer = lib.angles.filter(
+    (a) => a.status !== "archived" && (!offer || !a.offer || a.offer === offer) && (!geo || !a.geo || a.geo === geo),
+  );
   const ran = sameOffer.filter(
     (a) => (!source || a.id !== source.id) && !seedSet.has(a.text.toLowerCase()) && a.stats.campaigns && a.stats.spend >= 10,
   );
@@ -482,7 +493,7 @@ async function makeVariations(supabase, body) {
   const dropped = (fb || []).filter((f) => !f.kept).map((f) => `- "${f.text}"`);
 
   const parts = [
-    `Offer type: ${offer || "CPI app install"}`,
+    `Offer type: ${offer || "CPI app install"}${geo ? ` · Geo: ${geo} (write for that country's audience)` : ""}`,
     sourceBlock,
     children.length ? `Variations of it already in the library (don't repeat these):\n${children.map(fmtAngle).join("\n")}` : "",
     winners.length ? `This account's best angles:\n${winners.map(fmtAngle).join("\n")}` : "No winning angles recorded yet — rely on the source angle and general TikTok hook craft.",
@@ -534,7 +545,7 @@ async function saveFeedback(supabase, body) {
     if (error) throw error;
   }
   const angles = kept.length
-    ? await addAngles(supabase, { texts: kept, offer: body.offer, source: "variation", parent_id: body.angle_id || null })
+    ? await addAngles(supabase, { texts: kept, offer: body.offer, geo: body.geo, source: "variation", parent_id: body.angle_id || null })
     : [];
   return { angles };
 }
