@@ -301,7 +301,12 @@ exports.handler = async function (event) {
     if (action === "budgets") return budgetsForScopedAdvertisers(supabase);
 
     // ---- read-only: today's live TikTok campaign metrics (spend/CPM/CPA) ----
-    if (action === "metrics") return campaignMetricsForScopedAdvertisers(supabase);
+    if (action === "metrics") {
+      if (!(await claimMetricsRun(supabase, body.source === "cron"))) {
+        return json(200, { skipped: "a metrics run started less than 100s ago" });
+      }
+      return campaignMetricsForScopedAdvertisers(supabase);
+    }
 
     // ---- auto-stop on/off + threshold (app_settings "auto_stop") ----
     if (action === "auto_stop_settings") {
@@ -1296,6 +1301,34 @@ async function backfillDailyTotalForDate(supabase, date) {
   if (upd.error) return json(500, { error: "daily_totals write failed", details: sbErr(upd.error) });
 
   return json(200, { ok: true, date, total_spend: total, errors });
+}
+
+// The metrics cycle is triggered by open dashboards (~60s poll), the Supabase
+// pg_cron tick every 2 min (supabase/metrics_cron.sql) and the 15-min GitHub
+// Actions backup. A cron call is skipped when any run started within
+// METRICS_MIN_GAP_MS, so cron never overlaps a run or doubles up on an open
+// dashboard; dashboard calls always run (they need the numbers) and just
+// record their start.
+const METRICS_MIN_GAP_MS = 100000;
+const METRICS_TICK_KEY = "metrics_tick";
+
+async function claimMetricsRun(supabase, isCron) {
+  try {
+    if (isCron) {
+      const { data } = await supabase.from("app_settings").select("value").eq("key", METRICS_TICK_KEY).maybeSingle();
+      const last = Date.parse(data?.value?.started_at || 0);
+      if (last && Date.now() - last < METRICS_MIN_GAP_MS) return false;
+    }
+    await supabase
+      .from("app_settings")
+      .upsert(
+        { key: METRICS_TICK_KEY, value: { started_at: new Date().toISOString(), source: isCron ? "cron" : "client" }, updated_at: new Date().toISOString() },
+        { onConflict: "key" }
+      );
+  } catch (_) {
+    /* no app_settings table -> just run */
+  }
+  return true;
 }
 
 async function campaignMetricsForScopedAdvertisers(supabase) {
