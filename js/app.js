@@ -56,6 +56,7 @@ import {
 import { initTheme } from "./theme.js";
 import { createMainChart, updateMainChart } from "./charts.js";
 import { initSparkMaker, openSparkMakerWithAngles } from "./spark-maker.js";
+import { initJarvis } from "./jarvis.js";
 import { initCreativeLibrary, listLibraryAngles, tagCampaignsWithAngle } from "./creative-library.js";
 
 // ---------------------------------------------------------------------------
@@ -465,6 +466,7 @@ function wireEvents() {
   wireTrackerEvents();
 
   initSparkMaker({ onOpen: closeToolsDrawer, askPassword: askTiktokPassword });
+  initJarvis({ onOpen: closeToolsDrawer, askPassword: askTiktokPassword });
   initCreativeLibrary({ onOpen: closeToolsDrawer, askPassword: askTiktokPassword, openSparkMaker: openSparkMakerWithAngles });
   wireAutoStopToggle();
 

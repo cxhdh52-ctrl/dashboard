@@ -541,3 +541,4 @@ async function saveFeedback(supabase, body) {
 
 // exported for tests
 exports._internal = { verdictFor, fmtAngle };
+exports.listLibrary = listLibrary;

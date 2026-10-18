@@ -1232,3 +1232,27 @@ select.tracker-type-select.tracker-type-slides {
 .tk-summary .us-recheck { padding: 2px 10px; font-size: 12px; margin-left: auto; }
 .wh-warming-source b.neg { color: var(--loss); }
 .update-bar { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 9999; display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-radius: 10px; background: var(--bg-2, #13203a); border: 1px solid var(--accent, #4aa3ff); color: var(--text-0, #fff); font-size: 13px; box-shadow: 0 6px 24px rgba(0,0,0,.4); max-width: calc(100vw - 32px); }
+
+/* ---- Jarvis ---- */
+.jv-modal { width: 760px; max-width: 96vw; height: 82vh; max-height: 82vh; display: flex; flex-direction: column; }
+.jv-head-actions { display: flex; align-items: center; gap: 8px; }
+.jv-log { flex: 1 1 auto; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 4px 2px 12px; }
+.jv-empty { margin: auto; text-align: center; color: var(--text-2); font-size: 13px; line-height: 1.6; max-width: 420px; }
+.jv-empty b { color: var(--text-0); }
+.jv-msg { max-width: 88%; padding: 9px 12px; border-radius: var(--radius-sm); font-size: 13.5px; line-height: 1.5; overflow-wrap: anywhere; }
+.jv-user { align-self: flex-end; background: var(--accent); color: #fff; white-space: pre-wrap; }
+.jv-bot { align-self: flex-start; background: var(--bg-2); border: 1px solid var(--border); color: var(--text-0); }
+.jv-bot p { margin: 0 0 6px; }
+.jv-bot p:last-child { margin-bottom: 0; }
+.jv-bot .jv-h { font-weight: 700; margin-top: 4px; }
+.jv-bot ul, .jv-bot ol { margin: 2px 0 6px; padding-left: 18px; }
+.jv-bot code { font-size: 12px; background: var(--bg-1); padding: 1px 4px; border-radius: 4px; }
+.jv-table { overflow-x: auto; margin: 4px 0 6px; }
+.jv-table table { border-collapse: collapse; font-size: 12.5px; }
+.jv-table th, .jv-table td { padding: 4px 8px; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }
+.jv-err { border-color: var(--loss); color: var(--loss); }
+.jv-typing { color: var(--text-2); font-style: italic; }
+.jv-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 8px; }
+.jv-form { display: flex; gap: 8px; align-items: flex-end; }
+.jv-form textarea { flex: 1 1 auto; margin: 0; resize: none; min-height: 40px; max-height: 140px; }
+@media (max-width: 600px) { .jv-modal { height: 88vh; max-height: 88vh; } .jv-msg { max-width: 96%; } }

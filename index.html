@@ -139,6 +139,13 @@
   </div>
 
   <nav class="tools-nav">
+    <button class="tools-item" id="toolsJarvisBtn">
+      <span class="tools-item-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+      </span>
+      <span>Jarvis</span>
+    </button>
+
     <button class="tools-item" id="toolsAccountsBtn">
       <span class="tools-item-icon">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
@@ -359,6 +366,29 @@
 </div>
 
 <!-- ============ SPARK MAKER MODAL ============ -->
+<div class="modal-backdrop" id="jarvisModal">
+  <div class="modal modal-lg jv-modal">
+    <div class="modal-header">
+      <h3>Jarvis</h3>
+      <div class="jv-head-actions">
+        <button type="button" class="icon-btn" id="jvClearBtn" title="Start a new conversation">New chat</button>
+        <button id="closeJarvisModal">✕</button>
+      </div>
+    </div>
+    <div class="jv-log" id="jvLog"></div>
+    <div class="jv-chips" id="jvChips">
+      <button type="button" class="tracker-filter-btn" data-jv-ask="Morning brief: how did yesterday go, how is today going so far, and what needs my attention?">Morning brief</button>
+      <button type="button" class="tracker-filter-btn" data-jv-ask="Which campaigns and angles are winning today?">Today's winners</button>
+      <button type="button" class="tracker-filter-btn" data-jv-ask="What went wrong in the last 24 hours? Auto-stops, rejections, WH spend, connection problems.">What went wrong</button>
+      <button type="button" class="tracker-filter-btn" data-jv-ask="Which ad accounts are warmed up with US available and have no live campaign?">Ready accounts</button>
+    </div>
+    <form class="jv-form" id="jvForm">
+      <textarea id="jvInput" rows="1" placeholder="Ask anything — e.g. how much did we make yesterday?" autocomplete="off"></textarea>
+      <button type="submit" class="icon-btn primary" id="jvSendBtn">Ask</button>
+    </form>
+  </div>
+</div>
+
 <div class="modal-backdrop" id="sparkMakerModal">
   <div class="modal modal-lg sm-modal">
     <div class="modal-header">
