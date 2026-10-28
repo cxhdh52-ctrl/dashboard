@@ -18,7 +18,7 @@ jobs:
       - name: Run metrics cycle
         run: |
           curl -sS --fail-with-body --max-time 90 -o out.json \
-            -X POST "https://kryzxrads.vercel.app/api/tiktok-campaigns" \
+            -X POST "https://dashboard-tau-ten-97.vercel.app/api/tiktok-campaigns" \
             -H "Content-Type: application/json" \
             -d '{"action":"metrics"}'
           python3 -c "import json; d=json.load(open('out.json')); print('auto-stopped:', d.get('autoStopped')); print('errors:', d.get('errors'))"
