@@ -20,12 +20,13 @@ exports.handler = async function (event) {
   try {
     const token = process.env.GLITCHY_TOKEN;
 
+    // No token = Glitchy not set up on this deployment (e.g. a fresh fork).
+    // Return an empty result instead of an error so the dashboard shows real
+    // zeros + TikTok data rather than sticking on the fallback demo dataset.
     if (!token) {
       return {
-        statusCode: 500,
-        body: JSON.stringify({
-          error: "GLITCHY_TOKEN is missing. Add it in Netlify → Site settings → Environment variables.",
-        }),
+        statusCode: 200,
+        body: JSON.stringify({ configured: false, sources: [] }),
       };
     }
 
